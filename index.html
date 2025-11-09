@@ -1,0 +1,721 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/vite.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    
+    <!-- 🚀 WebGPU & Hardware Acceleration -->
+    <meta http-equiv="origin-trial" content="">
+    <meta name="color-scheme" content="dark light">
+    
+    <title>SubCaster</title>
+    
+    <!-- 🚀 Early WebGPU Detection & Initialization -->
+    <script>
+      // Enable WebGPU feature detection early
+      (async function() {
+        if ('gpu' in navigator) {
+          try {
+            console.log('🚀 WebGPU: Requesting adapter...');
+            const adapter = await navigator.gpu.requestAdapter({
+              powerPreference: 'high-performance'
+            });
+            
+            if (adapter) {
+              console.log('✅ WebGPU: Adapter acquired');
+              const device = await adapter.requestDevice();
+              console.log('✅ WebGPU: Device ready');
+              
+              // Store for later use
+              window.__webgpu = { adapter, device };
+            } else {
+              console.warn('⚠️ WebGPU: No adapter available');
+            }
+          } catch (err) {
+            console.warn('⚠️ WebGPU initialization failed:', err);
+          }
+        } else {
+          console.log('ℹ️ WebGPU not supported in this browser');
+        }
+      })();
+    </script>
+  </head>
+  <body>
+    <!-- Setup Wizard Modal -->
+    <div class="setup-wizard-overlay hidden" id="setup-wizard-overlay">
+      <div class="setup-wizard-modal">
+        <div class="setup-wizard-header">
+          <h2>🎧 SubCaster Setup Wizard</h2>
+          <p>Welcome! How would you like to set up SubCaster?</p>
+          
+          <!-- Demo vs Custom Setup Choice -->
+          <div class="setup-choice" id="setup-choice">
+            <div class="setup-choice-option" id="setup-demo-option">
+              <h3>🚀 Start Demo Mode</h3>
+              <p>Try SubCaster immediately with pre-configured demo data</p>
+              <button class="setup-btn setup-btn-primary" id="setup-demo-btn">Start Demo</button>
+            </div>
+            
+            <div class="setup-choice-divider">OR</div>
+            
+            <div class="setup-choice-option" id="setup-custom-option">
+              <h3>⚙️ Configure Custom Servers</h3>
+              <p>I have my own OpenSubsonic/Navidrome or AzuraCast server</p>
+              <button class="setup-btn setup-btn-secondary" id="setup-custom-btn">Start Configuration</button>
+            </div>
+          </div>
+          
+          <div class="setup-progress" id="setup-progress" style="display: none;">
+            <div class="setup-step active" data-step="1">1</div>
+            <div class="setup-step" data-step="2">2</div>
+            <div class="setup-step" data-step="3">3</div>
+            <div class="setup-step" data-step="4">4</div>
+            <div class="setup-step" data-step="5">5</div>
+          </div>
+        </div>
+
+        <div class="setup-wizard-content">
+          <!-- Step 1: OpenSubsonic Configuration -->
+          <div class="setup-step-content active" data-step="1">
+            <h3>🎵 Music Library (OpenSubsonic)</h3>
+            <p>Configure access to your music collection:</p>
+            
+            <div class="setup-form-group">
+              <label for="setup-opensubsonic-url">Server URL: *</label>
+              <input type="url" 
+                     id="setup-opensubsonic-url" 
+                     name="opensubsonic-url"
+                     placeholder="https://music.yourdomain.com" 
+                     autocomplete="url"
+                     spellcheck="false"
+                     required />
+              <small>The URL to your OpenSubsonic/Navidrome/Airsonic server</small>
+            </div>
+            
+            <!-- Unified Login Option -->
+            <div class="setup-unified-login">
+              <div class="setup-form-group">
+                <input type="checkbox" id="setup-use-unified-login" />
+                <label for="setup-use-unified-login">🔗 Use same login for OpenSubsonic and AzuraCast</label>
+                <small>Enable this if both services use identical username/password</small>
+              </div>
+              
+              <div class="setup-unified-credentials" id="setup-unified-credentials" style="display: none;">
+                <div class="setup-form-group">
+                  <label for="setup-unified-username">Unified Username:</label>
+                  <input type="text" 
+                         id="setup-unified-username" 
+                         name="unified-username"
+                         placeholder="shared-username"
+                         autocomplete="username"
+                         spellcheck="false" />
+                </div>
+                
+                <div class="setup-form-group">
+                  <label for="setup-unified-password">Unified Password:</label>
+                  <input type="password" 
+                         id="setup-unified-password" 
+                         name="unified-password"
+                         placeholder="shared-password"
+                         autocomplete="current-password" />
+                </div>
+              </div>
+            </div>
+            
+            <div class="setup-individual-credentials" id="setup-individual-credentials">
+              <div class="setup-form-group">
+                <label for="setup-opensubsonic-username">Username (optional):</label>
+                <input type="text" 
+                       id="setup-opensubsonic-username" 
+                       name="opensubsonic-username"
+                       placeholder="your-username"
+                       autocomplete="username"
+                       spellcheck="false" />
+              </div>
+              
+              <div class="setup-form-group">
+                <label for="setup-opensubsonic-password">Password (optional):</label>
+                <input type="password" 
+                       id="setup-opensubsonic-password" 
+                       name="opensubsonic-password"
+                       placeholder="your-password"
+                       autocomplete="current-password" />
+              </div>
+            </div>
+
+            <div class="setup-optional">
+              <input type="checkbox" id="setup-skip-opensubsonic" />
+              <label for="setup-skip-opensubsonic">Configure later (not recommended)</label>
+            </div>
+          </div>
+
+          <!-- Step 2: AzuraCast Configuration -->
+          <div class="setup-step-content" data-step="2">
+            <h3>📡 Radio Server (AzuraCast)</h3>
+            <p>Connect to your AzuraCast radio server:</p>
+            
+            <div class="setup-form-group">
+              <label for="setup-azuracast-servers">Server URLs (separate multiple with comma): *</label>
+              <input type="text" 
+                     id="setup-azuracast-servers" 
+                     name="azuracast-servers"
+                     placeholder="https://radio.yourdomain.com,https://backup.yourdomain.com" 
+                     autocomplete="url"
+                     spellcheck="false"
+                     required />
+              <small>Comma-separated list of your AzuraCast servers</small>
+            </div>
+            
+            <div class="setup-form-group">
+              <label for="setup-azuracast-station-id">Station ID:</label>
+              <input type="number" id="setup-azuracast-station-id" placeholder="1" value="1" />
+              <small>Your station ID (usually 1 for the first station)</small>
+            </div>
+            
+            <div class="setup-individual-azuracast-credentials" id="setup-individual-azuracast-credentials">
+              <div class="setup-form-group">
+                <label for="setup-azuracast-username">DJ Username (optional):</label>
+                <input type="text" 
+                       id="setup-azuracast-username" 
+                       name="azuracast-username"
+                       placeholder="dj-username"
+                       autocomplete="username"
+                       spellcheck="false" />
+              </div>
+              
+              <div class="setup-form-group">
+                <label for="setup-azuracast-password">DJ Password (optional):</label>
+                <input type="password" 
+                       id="setup-azuracast-password" 
+                       name="azuracast-password"
+                       placeholder="dj-password"
+                       autocomplete="current-password" />
+              </div>
+            </div>
+
+            <div class="setup-optional">
+              <input type="checkbox" id="setup-skip-azuracast" />
+              <label for="setup-skip-azuracast">Configure later</label>
+            </div>
+          </div>
+
+          <!-- Step 3: Streaming Configuration -->
+          <div class="setup-step-content" data-step="3">
+            <h3>🎙️ Live Streaming Settings</h3>
+            <p>Audio quality and streaming parameters:</p>
+            
+            <div class="setup-form-group">
+              <label for="setup-stream-bitrate">Stream Bitrate (kbps):</label>
+              <select id="setup-stream-bitrate">
+                <option value="96">96 kbps (low, less bandwidth usage)</option>
+                <option value="128" selected>128 kbps (standard, recommended)</option>
+                <option value="192">192 kbps (high, more bandwidth)</option>
+                <option value="320">320 kbps (very high, much bandwidth)</option>
+              </select>
+            </div>
+            
+            <div class="setup-form-group">
+              <label for="setup-sample-rate">Sample Rate (Hz):</label>
+              <select id="setup-sample-rate">
+                <option value="22050">22050 Hz (low)</option>
+                <option value="44100" selected>44100 Hz (CD quality, recommended)</option>
+                <option value="48000">48000 Hz (high)</option>
+              </select>
+            </div>
+
+            <div class="setup-form-group">
+              <label for="setup-stream-server">Stream Server:</label>
+              <input type="text" id="setup-stream-server" placeholder="radio.yourdomain.com" />
+              <small>Hostname of the streaming server (without http://)</small>
+            </div>
+            
+            <div class="setup-form-group">
+              <label for="setup-stream-port">Stream Port:</label>
+              <input type="number" id="setup-stream-port" placeholder="8000" value="8000" />
+            </div>
+            
+            <div class="setup-form-group">
+              <label for="setup-stream-username">Stream Username:</label>
+              <input type="text" id="setup-stream-username" placeholder="dj-stream" />
+            </div>
+            
+            <div class="setup-form-group">
+              <label for="setup-stream-password">Stream Password:</label>
+              <input type="password" id="setup-stream-password" placeholder="stream-password" />
+            </div>
+          </div>
+
+          <!-- Step 4: Discord Wishbox (Optional) -->
+          <div class="setup-step-content" data-step="4">
+            <h3>💬 Discord Wishbox (Optional)</h3>
+            <p>Enable song requests from Discord users:</p>
+            
+            <div class="setup-optional setup-discord-enable">
+              <input type="checkbox" id="setup-enable-discord" />
+              <label for="setup-enable-discord">Enable Discord Wishbox feature</label>
+              <small>Allow listeners to request songs via Discord</small>
+            </div>
+
+            <div class="setup-discord-config" id="setup-discord-config" style="display: none;">
+              <div class="setup-info-box">
+                <h4>🔐 Security Notice</h4>
+                <p>Your Discord bot token will be stored securely on the server and <strong>never exposed to the browser</strong>.</p>
+                <p>To get your Discord credentials:</p>
+                <ol>
+                  <li>Go to <a href="https://discord.com/developers/applications" target="_blank">Discord Developer Portal</a></li>
+                  <li>Create or select your application</li>
+                  <li>Go to "Bot" → Click "Reset Token" to get your bot token</li>
+                  <li>Enable Developer Mode in Discord (Settings → Advanced)</li>
+                  <li>Right-click your channel → "Copy ID" for Channel ID</li>
+                  <li>Right-click your server icon → "Copy Server ID" for Guild ID</li>
+                </ol>
+              </div>
+
+              <div class="setup-form-group">
+                <label for="setup-discord-token">🔑 Discord Bot Token: *</label>
+                <input type="password" 
+                       id="setup-discord-token" 
+                       name="discord-token"
+                       placeholder="MTQyNjAwMjg0ODE0NzE4MTYzOA.GXkUTk.xqdO..."
+                       autocomplete="off"
+                       spellcheck="false" />
+                <small>Your Discord bot token (kept secure on server)</small>
+              </div>
+              
+              <div class="setup-form-group">
+                <label for="setup-discord-channel-id">📺 Discord Channel ID: *</label>
+                <input type="text" 
+                       id="setup-discord-channel-id" 
+                       name="discord-channel-id"
+                       placeholder="927495125888794634"
+                       autocomplete="off"
+                       spellcheck="false" />
+                <small>The channel where song requests will be received</small>
+              </div>
+              
+              <div class="setup-form-group">
+                <label for="setup-discord-guild-id">🏰 Discord Guild/Server ID (optional):</label>
+                <input type="text" 
+                       id="setup-discord-guild-id" 
+                       name="discord-guild-id"
+                       placeholder="785932996406280192"
+                       autocomplete="off"
+                       spellcheck="false" />
+                <small>Your Discord server ID (optional but recommended)</small>
+              </div>
+            </div>
+          </div>
+
+          <!-- Step 5: Summary & Save -->
+          <div class="setup-step-content" data-step="5">
+            <h3>✅ Configuration Summary</h3>
+            <p>Review your settings before saving:</p>
+            
+            <div class="setup-summary" id="setup-summary">
+              <!-- Will be populated by JavaScript -->
+            </div>
+
+            <div class="setup-save-options">
+              <div class="setup-form-group">
+                <input type="checkbox" id="setup-save-to-file" checked />
+                <label for="setup-save-to-file">Save configuration to .env file</label>
+                <small>Recommended: Saves all settings permanently</small>
+              </div>
+
+              <div class="setup-form-group">
+                <input type="checkbox" id="setup-create-backup" checked />
+                <label for="setup-create-backup">Create backup of current .env</label>
+                <small>Safety copy in case something goes wrong</small>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="setup-wizard-footer">
+          <button class="setup-btn setup-btn-secondary" id="setup-back-btn" disabled>Back</button>
+          <button class="setup-btn setup-btn-primary" id="setup-next-btn">Next</button>
+          <button class="setup-btn setup-btn-success" id="setup-finish-btn" style="display: none;">Complete Setup</button>
+          <button class="setup-btn setup-btn-ghost" id="setup-skip-btn">Skip Setup</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="app">
+      <!-- Disconnect Timer Display - Above all decks -->
+      <div class="disconnect-timer-overlay" id="disconnect-timer-overlay">
+        <div class="timer-display-container">
+          <div class="timer-warning-message" id="timer-warning-message">
+            HOLD BUTTON FOR 3 SECONDS TO DISCONNECT
+          </div>
+          <div class="digital-timer-display" id="digital-timer-display">
+            3.00000
+          </div>
+          <div class="timer-label">DISCONNECT COUNTDOWN</div>
+        </div>
+      </div>
+
+      <!-- Top Section: DJ Controls -->
+      <div class="dj-section">
+        <!-- Player A (Top Left) -->
+        <div class="player-deck" id="player-a" data-player-side="a">
+          <div class="player-label a">
+            <div class="player-label-text">A</div>
+          </div>
+        </div>
+
+        <!-- Player B (Top Right) -->
+        <div class="player-deck" id="player-b" data-player-side="b">
+          <div class="player-label b">
+            <div class="player-label-text">B</div>
+          </div>
+        </div>
+
+        <!-- Center Controls -->
+        <div class="center-controls">
+          <!-- Login Form Overlay -->
+          <div class="OpenSubsonic-login" id="OpenSubsonic-login">
+            <form class="login-form" autocomplete="on">
+              <!-- Unified Login Section (when VITE_USE_UNIFIED_LOGIN=true) -->
+              <div class="form-group" id="unified-login-section" style="display: none;">
+                <div class="login-input-container">
+                  <input type="text" 
+                         id="unified-username" 
+                         name="username" 
+                         placeholder="Username"
+                         autocomplete="username"
+                         spellcheck="false">
+                </div>
+                <div class="login-input-container">
+                  <input type="password" 
+                         id="unified-password" 
+                         name="password"
+                         placeholder="Password"
+                         autocomplete="current-password">
+                </div>
+              </div>
+
+              <!-- Individual Login Sections (when VITE_USE_UNIFIED_LOGIN=false) -->
+              <div class="individual-login-sections" id="individual-login-sections">
+                <!-- OpenSubsonic Section -->
+                <div class="form-group" id="opensubsonic-section">
+                  <h4>OpenSubsonic (Music Library)</h4>
+                  <div class="login-input-container">
+                    <input type="url" 
+                           id="OpenSubsonic-server" 
+                           name="opensubsonic-server"
+                           placeholder="OpenSubsonic Server URL"
+                           autocomplete="url"
+                           spellcheck="false">
+                  </div>
+                  <div class="login-input-container">
+                    <input type="text" 
+                           id="OpenSubsonic-username" 
+                           name="opensubsonic-username"
+                           placeholder="OpenSubsonic Username"
+                           autocomplete="username"
+                           spellcheck="false">
+                  </div>
+                  <div class="login-input-container">
+                    <input type="password" 
+                           id="OpenSubsonic-password" 
+                           name="opensubsonic-password"
+                           placeholder="OpenSubsonic Password"
+                           autocomplete="current-password">
+                  </div>
+                </div>
+                
+                <!-- Stream Section -->
+                <div class="form-group" id="stream-section">
+                  <h4>Stream Server (AzuraCast/Icecast)</h4>
+                  <div class="login-input-container">
+                    <input type="url" 
+                           id="stream-server-url" 
+                           name="stream-server-url"
+                           placeholder="Stream Server URL"
+                           autocomplete="url"
+                           spellcheck="false">
+                  </div>
+                  <div class="login-input-container">
+                    <input type="text" 
+                           id="stream-username" 
+                           name="stream-username"
+                           placeholder="Stream Username"
+                           autocomplete="username"
+                           spellcheck="false">
+                  </div>
+                  <div class="login-input-container">
+                    <input type="password" 
+                           id="stream-password" 
+                           name="stream-password"
+                           placeholder="Stream Password"
+                           autocomplete="current-password">
+                  </div>
+                </div>
+              </div>
+            </form>
+            
+            <!-- Login Button inside the form for better browser compatibility -->
+            <div class="login-button-container">
+              <button type="submit" id="OpenSubsonic-login-btn">
+                <span class="material-icons">login</span>
+                <span>Connect</span>
+              </button>
+            </div>
+          </div>
+          
+          <!-- DJ Controls (shown after login) -->
+          <div class="dj-controls" id="dj-controls" style="display: none;">
+            <!-- Professional Center Mixer Panel -->
+            <div class="center-mixer-panel">
+              <!-- Status Indicators Container -->
+              <div class="status-indicators-container">
+                <!-- OpenSubsonic Status -->
+                <div class="user-status-indicator" id="opensubsonic-user-status">
+                  <span class="material-icons user-icon">music_note</span>
+                  <span class="user-text" id="opensubsonic-username">-</span>
+                </div>
+                
+                <!-- Combined Stream Status & Live Indicator - Clickable -->
+                <div class="stream-button-container">
+                  <button class="stream-live-indicator disconnected" id="stream-live-status">
+                    <span class="material-icons stream-icon">dns</span>
+                    <span class="stream-username" id="stream-username-display">Select Station</span>
+                    <div class="live-dot"></div>
+                  </button>
+                  <button class="stream-reset-button" id="stream-reset-button" style="display: none;" title="Clear station selection">
+                    <span class="material-icons">close</span>
+                  </button>
+                </div>
+              </div>
+              
+              <!-- Station Selection Dropdown (triggered by STREAM button) -->
+              <div class="station-dropdown-overlay" id="station-dropdown-overlay">
+                <div class="station-dropdown-menu" id="station-dropdown-menu">
+                  <div class="dropdown-loading">
+                    <span class="material-icons">radio</span>
+                    <span>Loading stations...</span>
+                  </div>
+                </div>
+              </div>
+              
+              <!-- Microphone Section (Left: Effects, Center: Button, Right: Meter) -->
+              <div class="microphone-section">
+                <!-- Mic Effects (vertikal untereinander, kompakt) -->
+                <div class="mic-effects-vertical">
+                  <div class="mic-effect-button active" id="mic-compressor-btn">
+                    <span class="effect-text">COMP</span>
+                  </div>
+                  
+                  <div class="mic-effect-button active" id="mic-eq-btn">
+                    <span class="effect-text">EQ</span>
+                  </div>
+                  
+                  <div class="mic-effect-button active" id="mic-limiter-btn">
+                    <span class="effect-text">LIMIT</span>
+                  </div>
+                </div>
+                
+                <!-- Main Microphone Button -->
+                <div class="mic-button-container">
+                  <button class="mic-btn-pro" id="mic-toggle">
+                    <span class="material-icons mic-icon">mic</span>
+                    <span class="mic-label">MICROPHONE</span>
+                  </button>
+                </div>
+                
+                <!-- Combined Meters Section -->
+                <div class="combined-meters-section">
+                  <!-- Mic Volume Meter -->
+                  <div class="mic-meter-control">
+                    <div class="volume-meter-compact" id="mic-volume-meter">
+                      <div class="meter-bars-compact">
+                        <div class="meter-bar-compact" data-level="0"></div>
+                        <div class="meter-bar-compact" data-level="1"></div>
+                        <div class="meter-bar-compact" data-level="2"></div>
+                        <div class="meter-bar-compact" data-level="3"></div>
+                        <div class="meter-bar-compact" data-level="4"></div>
+                        <div class="meter-bar-compact" data-level="5"></div>
+                        <div class="meter-bar-compact orange" data-level="6"></div>
+                        <div class="meter-bar-compact red" data-level="7"></div>
+                      </div>
+                    </div>
+                    <span class="material-icons master-meter-icon">mic</span>
+                  </div>
+                  
+                  <!-- Deck Master Meter (alle Decks kombiniert) -->
+                  <div class="master-meter-control">
+                    <div class="volume-meter-compact" id="deck-master-meter">
+                      <div class="meter-bars-compact">
+                        <div class="meter-bar-compact" data-level="0"></div>
+                        <div class="meter-bar-compact" data-level="1"></div>
+                        <div class="meter-bar-compact" data-level="2"></div>
+                        <div class="meter-bar-compact" data-level="3"></div>
+                        <div class="meter-bar-compact" data-level="4"></div>
+                        <div class="meter-bar-compact" data-level="5"></div>
+                        <div class="meter-bar-compact orange" data-level="6"></div>
+                        <div class="meter-bar-compact red" data-level="7"></div>
+                      </div>
+                    </div>
+                    <span class="material-icons master-meter-icon">speaker</span>
+                  </div>
+                  
+                  <!-- Stream Output Meter (Decks + Mic zum Stream) -->
+                  <div class="master-meter-control">
+                    <div class="volume-meter-compact" id="stream-output-meter">
+                      <div class="meter-bars-compact">
+                        <div class="meter-bar-compact" data-level="0"></div>
+                        <div class="meter-bar-compact" data-level="1"></div>
+                        <div class="meter-bar-compact" data-level="2"></div>
+                        <div class="meter-bar-compact" data-level="3"></div>
+                        <div class="meter-bar-compact" data-level="4"></div>
+                        <div class="meter-bar-compact" data-level="5"></div>
+                        <div class="meter-bar-compact orange" data-level="6"></div>
+                        <div class="meter-bar-compact red" data-level="7"></div>
+                      </div>
+                    </div>
+                    <span class="material-icons master-meter-icon">cast</span>
+                  </div>
+                </div>
+              </div>
+              
+              <!-- Microphone Device Selection -->
+              <div class="mic-device-selector">
+                <select id="mic-device-select" class="mic-device-dropdown">
+                  <option value="">Select microphone...</option>
+                </select>
+                <button id="mic-refresh-btn" class="mic-refresh-button" title="Refresh microphone list">
+                  <span class="material-icons">refresh</span>
+                </button>
+              </div>
+
+            </div>
+          </div>
+        </div>
+
+        <!-- Player C (Bottom Left) -->
+        <div class="player-deck" id="player-c" data-player-side="c">
+          <div class="player-label c">
+            <div class="player-label-text">C</div>
+          </div>
+        </div>
+
+        <!-- Wishbox Frame (Between Decks C+D, under Mixer) -->
+        <div class="wishbox-frame" id="wishbox-frame">
+          <div class="wishbox-frame-content" id="wishbox-frame-content">
+            <!-- Discord messages will be populated here -->
+          </div>
+        </div>
+
+        <!-- Player D (Bottom Right) -->
+        <div class="player-deck" id="player-d" data-player-side="d">
+          <div class="player-label d">
+            <div class="player-label-text">D</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Bottom Section: Music Library -->
+      <div class="music-library">
+        <!-- Main Content Area -->
+        <div class="content-main">
+          <!-- Unified Library Browser (replaces tabs) -->
+          <div id="browse-content">
+            <!-- Content will be dynamically generated by LibraryBrowser -->
+          </div>
+        </div>
+        
+        <!-- Queue Section -->
+        <div class="queue-section">
+          <!-- Queue Label Row (outside container like player labels) -->
+          <div class="queue-label-row">
+            <div class="auto-queue-controls">
+              <button class="auto-queue-btn active" id="auto-queue-ab" title="Auto-Play between Deck A and B">
+                A+B
+              </button>
+              <button class="auto-queue-btn" id="auto-queue-cd" title="Auto-Play between Deck C and D">
+                C+D
+              </button>
+              <!-- Deck C+D Toggle Button (Eye icon only, directly after C+D) -->
+              <button class="deck-toggle-btn" id="deck-toggle-btn" title="Show/Hide Deck C+D">
+                <span class="material-icons">visibility</span>
+              </button>
+              <button class="queue-mic-add-btn" id="queue-mic-add-btn" title="Add Microphone Break to Queue">
+                <span class="material-icons">mic</span>
+              </button>
+              <div class="radio-stream-selector">
+                <button class="radio-stream-btn" id="radio-stream-btn" title="Load Radio Stream to Deck">
+                  <span class="material-icons">radio</span>
+                </button>
+                <div class="radio-stream-dropdown" id="radio-stream-dropdown">
+                  <div class="radio-stream-header">Select Radio Stream</div>
+                  <div class="radio-stream-loading" id="radio-stream-loading">
+                    <span class="material-icons spinning">refresh</span>
+                    Loading stations...
+                  </div>
+                  <div class="radio-stream-list" id="radio-stream-list">
+                    <!-- Radio streams will be populated here -->
+                  </div>
+                </div>
+              </div>
+              <!-- Discord Wishbox Selector (matching radio-stream-selector) -->
+              <div class="wishbox-selector">
+                <button class="wishbox-btn" id="wishbox-btn" title="View Discord Wishes">
+                  <span class="material-icons">chat</span>
+                </button>
+                <!-- Discord Wishbox Dropdown (moved here, next to button) -->
+                <div class="wishbox-dropdown" id="wishbox-dropdown">
+                  <div class="wishbox-header">
+                    <span class="material-icons">chat</span>
+                    <span>Discord Wünsche</span>
+                    <button class="wishbox-sort-btn" id="wishbox-sort-btn" title="Sortierung ändern">
+                      <span class="material-icons">arrow_downward</span>
+                    </button>
+                    <button class="wishbox-close-btn" id="wishbox-close-btn">
+                      <span class="material-icons">close</span>
+                    </button>
+                  </div>
+                  <div class="wishbox-status" id="wishbox-status">
+                    <span class="material-icons spinning">sync</span>
+                    Verbinde mit Discord...
+                  </div>
+                  <div class="wishbox-content" id="wishbox-content">
+                    <!-- Discord messages will be populated here -->
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+          
+          <!-- Queue Container (without header) -->
+          <div class="queue-panel">
+            <div class="queue-items" id="queue-list"></div>
+            <!-- Permanente Drop-Zone (immer sichtbar, füllt restlichen Platz) -->
+            <div class="queue-empty-dropzone">
+              <span class="material-icons">queue_music</span>
+              <p>Drop songs here to queue them</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Version Display -->
+    <div class="version-display" id="version-display" title="Current Version">
+      <span class="version-label">v</span>
+      <span class="version-text">...</span>
+    </div>
+
+    <!-- GitHub Cat with CRT Effects -->
+    <div class="github-cat" id="github-cat" title="GitHub Repository">
+      <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+        <path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0 0 24 12c0-6.63-5.37-12-12-12z"/>
+      </svg>
+    </div>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

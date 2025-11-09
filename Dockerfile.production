@@ -1,0 +1,78 @@
+# Multi-stage build für optimierte Production-Image
+FROM node:24.8.0-alpine AS builder
+
+# Build-time arguments for versioning
+ARG GIT_COMMIT=unknown
+ARG BUILD_DATE=unknown
+ARG VERSION=dev
+
+# Arbeitsverzeichnis setzen
+WORKDIR /app
+
+# ⚠️ KEINE BUILD-TIME ENV VARIABLEN!
+# Alle Variablen werden zur RUNTIME geladen (via Docker ENV)
+# Dies erlaubt ein universelles Image das mit jedem ENV-Set funktioniert
+
+# Package files kopieren
+COPY package*.json ./
+
+# Alle Dependencies installieren (inkl. devDependencies für Build)
+RUN npm ci && npm cache clean --force
+
+# Source code kopieren
+COPY . .
+
+# Build OHNE spezifische ENV-Variablen
+# Der Code lädt Config zur Runtime vom Backend (/api/config)
+RUN npm run build
+
+# Production Stage
+FROM node:24.8.0-alpine AS production
+
+# Copy version info from builder stage
+ARG GIT_COMMIT
+ARG BUILD_DATE
+ARG VERSION
+
+# Set version as environment variables for runtime access
+ENV APP_VERSION=${VERSION} \
+    GIT_COMMIT=${GIT_COMMIT} \
+    BUILD_DATE=${BUILD_DATE}
+
+# Arbeitsverzeichnis setzen
+WORKDIR /app
+
+# System-Dependencies für Health-Check
+RUN apk add --no-cache curl
+
+# Package-Dateien kopieren für production install
+COPY --from=builder /app/package*.json ./
+
+# Nur Production-Dependencies installieren (postinstall Scripts deaktivieren)
+RUN npm ci --omit=dev --ignore-scripts && npm cache clean --force
+
+# Build-Artefakte kopieren
+COPY --from=builder /app/dist ./dist
+COPY --from=builder /app/unified-server.js ./
+
+# Non-root User erstellen
+RUN addgroup -g 1001 -S nodejs && \
+    adduser -S nodejs -u 1001
+
+# docker-data Verzeichnis erstellen und Ownership setzen
+RUN mkdir -p /app/docker-data && \
+    chown -R nodejs:nodejs /app/docker-data
+
+# Ownership ändern
+RUN chown -R nodejs:nodejs /app
+USER nodejs
+
+# Port freigeben
+EXPOSE 3001
+
+# Health-Check hinzufügen
+HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
+  CMD curl -f http://localhost:3001/health || exit 1
+
+# Server starten
+CMD ["node", "unified-server.js"]

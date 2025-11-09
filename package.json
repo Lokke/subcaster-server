@@ -42,13 +42,19 @@
     "@capacitor/android": "^7.4.3",
     "@capacitor/cli": "^7.4.3",
     "@capacitor/core": "^7.4.3",
+    "@ffmpeg-installer/ffmpeg": "^1.1.0",
     "@types/three": "^0.180.0",
     "audio-decode": "^2.2.3",
+    "audiobuffer-to-wav": "^1.0.0",
     "cors": "^2.8.5",
     "dotenv": "^17.2.2",
     "express": "^5.1.0",
+    "fluent-ffmpeg": "^2.1.3",
     "node-fetch": "^3.3.2",
-    "three": "^0.180.0"
+    "pcm-convert": "^1.6.5",
+    "stream-buffers": "^3.0.3",
+    "three": "^0.180.0",
+    "ws": "^8.18.3"
   },
   "main": "electron/main.js"
 }

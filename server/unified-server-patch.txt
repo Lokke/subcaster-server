@@ -1,0 +1,58 @@
+// Add these imports at the top of unified-server.js after other imports:
+
+import { AudioEngine } from './server/AudioEngine.js';
+import { CommandServer } from './server/CommandServer.js';
+import { AudioStreamServer } from './server/AudioStreamServer.js';
+import { createServer } from 'http';
+
+// Then replace the final app.listen section with this:
+
+// ============================================================================
+// SERVER-SIDE AUDIO ENGINE
+// ============================================================================
+
+console.log('🎛️ Initializing Server-Side Audio Engine...');
+const audioEngine = new AudioEngine();
+
+// Create HTTP server (for WebSocket upgrade)
+const httpServer = createServer(app);
+
+// Initialize Command Server (WebSocket for control)
+const commandServer = new CommandServer(httpServer, audioEngine);
+
+// Initialize Audio Stream Server (WebSocket for monitor audio)
+const audioStreamServer = new AudioStreamServer(httpServer, audioEngine);
+
+// Cleanup on exit
+process.on('SIGTERM', async () => {
+  console.log('🛑 SIGTERM received, cleaning up...');
+  await audioEngine.cleanup();
+  commandServer.cleanup();
+  audioStreamServer.cleanup();
+  process.exit(0);
+});
+
+process.on('SIGINT', async () => {
+  console.log('🛑 SIGINT received, cleaning up...');
+  await audioEngine.cleanup();
+  commandServer.cleanup();
+  audioStreamServer.cleanup();
+  process.exit(0);
+});
+
+// Use httpServer instead of app.listen
+httpServer.listen(PORT, '0.0.0.0', () => {
+    console.log(`🚀 SubCaster Server-Side Audio Engine running on Port ${PORT}`);
+    console.log(`   🌐 Web Interface: http://localhost:${PORT}`);
+    console.log(`   📡 Command WebSocket: ws://localhost:${PORT}/ws/commands`);
+    console.log(`   🔊 Audio Stream: ws://localhost:${PORT}/ws/audio`);
+    console.log(`🎯 Target: ${process.env.STREAM_SERVER || 'funkturm.radio-endstation.de'}:${process.env.STREAM_PORT || '8015'}`);
+    console.log(`📡 CORS Proxy: /api/opensubsonic-stream, /api/opensubsonic-cover`);
+    console.log(`🔄 Harbor Stream: /api/stream`);
+    console.log(`🔄 Mount-Points: ${MOUNT_POINTS.join(', ')}`);
+    console.log(`🚀 Server ready and listening...`);
+});
+
+httpServer.on('error', (error) => {
+    console.error('❌ Server error:', error);
+});

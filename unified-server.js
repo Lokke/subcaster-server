@@ -7,6 +7,15 @@ import fs from 'fs/promises';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
 
+// 🎵 Audio Engine Imports
+import { AudioEngine } from './server/AudioEngine.js';
+import { CommandServer } from './server/CommandServer.js';
+// AudioStreamServer removed - replaced by MediaSoup WebRTC
+import { MicrophoneServer } from './server/MicrophoneServer.js';
+import { AudioMixer } from './server/AudioMixer.js';
+import { AzuraCastOutput } from './server/AzuraCastOutput.js';
+import MediaSoupServer from './server/MediaSoupServer.js';
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
@@ -493,7 +502,7 @@ async function generateWaveform(songId, audioUrl, cacheDir, peaksPerSecond) {
     // Convert relative URL to absolute if needed
     let fullAudioUrl = audioUrl;
     if (audioUrl.startsWith('/')) {
-        fullAudioUrl = `http://localhost:5173${audioUrl}`;
+        fullAudioUrl = `http://localhost:3001${audioUrl}`;
         console.log(`🔄 [WAVEFORM] Converted to: ${fullAudioUrl.substring(0, 100)}...`);
     }
     
@@ -1270,6 +1279,9 @@ app.get('/api/health', (req, res) => {
     });
 });
 
+// ============================================================================
+//  PRODUCTION: Static Files
+// ============================================================================
 // Statische Dateien NACH den API-Routes
 app.use(express.static(path.join(__dirname, 'dist'), {
     setHeaders: (res, path, stat) => {
@@ -1280,6 +1292,11 @@ app.use(express.static(path.join(__dirname, 'dist'), {
         }
     }
 }));
+
+// Root route - serve index.html
+app.get('/', (req, res) => {
+    res.sendFile(path.join(__dirname, 'dist', 'index.html'));
+});
 
 // Error handling
 process.on('uncaughtException', (error) => {
@@ -1297,9 +1314,180 @@ const server = app.listen(PORT, '0.0.0.0', () => {
     console.log(`🔄 Harbor Stream: /api/stream`);
     console.log(`🔄 Mount-Points: ${MOUNT_POINTS.join(', ')}`);
     console.log(`🚀 Server ready and listening...`);
+    
+    // Initialize Audio Engine after server is ready
+    initializeAudioEngine();
 });
 
 server.on('error', (error) => {
     console.error('❌ Server error:', error);
+});
+
+// Centralized WebSocket upgrade handler
+// This will be populated by WebSocket servers during initialization
+global.wsHandlers = new Map();
+
+server.on('upgrade', (request, socket, head) => {
+    console.log(`🔄 Upgrade request received: ${request.url}`);
+    
+    const handler = global.wsHandlers.get(request.url);
+    if (handler) {
+        console.log(`✅ Routing to handler for ${request.url}`);
+        handler(request, socket, head);
+    } else {
+        console.warn(`⚠️ No handler for ${request.url}, available handlers: ${Array.from(global.wsHandlers.keys()).join(', ')}`);
+        socket.destroy();
+    }
+});
+
+// ============================================================================
+// 🎵 AUDIO ENGINE INITIALIZATION
+// ============================================================================
+
+let audioEngine;
+let commandServer;
+// audioStreamServer removed - replaced by MediaSoup WebRTC
+let microphoneServer;
+let audioMixer;
+let azuraCastOutput;
+let mediaSoupServer;
+
+async function initializeAudioEngine() {
+    try {
+        console.log('\n🎵 ============================================');
+        console.log('🎵 Initializing Server-Side Audio Engine');
+        console.log('🎵 ============================================\n');
+        
+        // 1. Create Audio Engine (manages 4 decks)
+        audioEngine = new AudioEngine();
+        console.log('✅ AudioEngine created');
+        
+        // 2. Create Microphone Server (handles WebRTC group calls)
+        microphoneServer = new MicrophoneServer(server);
+        console.log('✅ MicrophoneServer created');
+        
+        // 3. Create Audio Mixer (mixes decks + mics)
+        audioMixer = new AudioMixer(audioEngine, microphoneServer);
+        console.log('✅ AudioMixer created');
+        
+        // 4. Create Command Server (WebSocket API for deck control)
+        commandServer = new CommandServer(server, audioEngine);
+        console.log('✅ CommandServer created');
+        
+        // 5. AudioStreamServer removed - MediaSoup WebRTC handles audio now
+        // Legacy WebSocket PCM streaming replaced by Opus 320kbps via WebRTC
+        console.log('ℹ️  Audio streaming: MediaSoup WebRTC (no legacy AudioStreamServer)');
+        
+        // 6. Create MediaSoup Server (WebRTC conference with Opus 320kbps)
+        mediaSoupServer = new MediaSoupServer(audioEngine, server);
+        await mediaSoupServer.initialize();
+        console.log('✅ MediaSoup Server initialized');
+        
+        // Connect AudioEngine to MediaSoup via RTP
+        mediaSoupServer.on('audioEngineConnected', ({ ip, port }) => {
+            console.log(`📡 AudioEngine → MediaSoup RTP: ${ip}:${port}`);
+            audioEngine.startRTPOutput(ip, port);
+        });
+        
+        // 7. Start audio mixing
+        audioMixer.start();
+        console.log('✅ Audio mixing started');
+        
+        // 8. Create AzuraCast Output (if configured)
+        const azuracastConfig = {
+            server: process.env.STREAM_SERVER || 'localhost',
+            port: parseInt(process.env.STREAM_PORT || '8000'),
+            password: process.env.AZURACAST_DJ_PASSWORD || 'hackme',
+            mount: process.env.AZURACAST_MOUNT || '/live',
+            format: process.env.STREAM_FORMAT || 'mp3',
+            bitrate: parseInt(process.env.VITE_STREAM_BITRATE || '128'),
+            sampleRate: parseInt(process.env.VITE_STREAM_SAMPLE_RATE || '48000'),
+            channels: 2,
+            name: 'SubCaster Live',
+            description: 'SubCaster DJ Stream',
+            genre: 'Various'
+        };
+        
+        azuraCastOutput = new AzuraCastOutput(audioMixer, azuracastConfig);
+        console.log('✅ AzuraCastOutput created');
+        
+        // Auto-start streaming if enabled
+        if (process.env.AZURACAST_AUTO_START === 'true') {
+            azuraCastOutput.start();
+            console.log('✅ AzuraCast streaming auto-started');
+        }
+        
+        console.log('\n🎵 ============================================');
+        console.log('🎵 Audio Engine Ready!');
+        console.log('🎵 ============================================\n');
+        console.log('📡 WebSocket Endpoints:');
+        console.log(`   Commands:    ws://localhost:${PORT}/ws/commands`);
+        console.log(`   MediaSoup:   ws://localhost:${PORT}/ws/mediasoup (NEW)`);
+        console.log(`   Microphone:  ws://localhost:${PORT}/ws/microphone (legacy)`);
+        console.log('   (AudioStreamServer removed - using MediaSoup WebRTC)');
+        console.log('');
+        
+    } catch (error) {
+        console.error('❌ Failed to initialize Audio Engine:', error);
+    }
+}
+
+// Cleanup on shutdown
+process.on('SIGINT', async () => {
+    console.log('\n🛑 Shutting down...');
+    
+    if (azuraCastOutput) {
+        azuraCastOutput.cleanup();
+    }
+    
+    if (audioMixer) {
+        audioMixer.cleanup();
+    }
+    
+    // audioStreamServer removed - MediaSoup handles audio
+    
+    if (microphoneServer) {
+        microphoneServer.cleanup();
+    }
+    
+    if (mediaSoupServer) {
+        await mediaSoupServer.cleanup();
+    }
+    
+    if (audioEngine) {
+        await audioEngine.cleanup();
+    }
+    
+    console.log('✅ Cleanup complete');
+    process.exit(0);
+});
+
+process.on('SIGTERM', async () => {
+    console.log('\n🛑 Received SIGTERM, shutting down...');
+    
+    if (azuraCastOutput) {
+        azuraCastOutput.cleanup();
+    }
+    
+    if (audioMixer) {
+        audioMixer.cleanup();
+    }
+    
+    // audioStreamServer removed - MediaSoup handles audio
+    
+    if (microphoneServer) {
+        microphoneServer.cleanup();
+    }
+    
+    if (mediaSoupServer) {
+        await mediaSoupServer.cleanup();
+    }
+    
+    if (audioEngine) {
+        await audioEngine.cleanup();
+    }
+    
+    console.log('✅ Cleanup complete');
+    process.exit(0);
 });
 

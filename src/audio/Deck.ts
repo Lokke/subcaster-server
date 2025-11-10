@@ -8,17 +8,24 @@
  * Key responsibilities:
  * - Load tracks into HTMLAudioElement
  * - Control playback (play/pause/seek)
- * - Connect/disconnect from audio mixer
+ * - Connect/disconnect from audio mixer (only in local mode)
  * - Volume control
  * - State tracking (empty/loading/ready/playing/paused/ended/error)
  * 
  * Thread safety:
  * - All methods should be called from main thread (renderer)
  * - Uses deferred connection strategy (connect on play, not on load)
+ * 
+ * Server Mode:
+ * - In server mode, audio is NOT connected to local AudioContext
+ * - HTMLAudioElement still controls playback (for UI sync)
+ * - Server receives commands and mixes audio server-side
+ * - Browser receives final mix via WebRTC (MediaSoup)
  */
 
 import * as AudioManager from './AudioManager';
 import * as SourceNodeCache from './SourceNodeCache';
+import { getIsServerMode } from '../main';
 
 export type DeckSide = 'a' | 'b' | 'c' | 'd';
 
@@ -214,8 +221,17 @@ export class Deck {
    * Connect audio element to mixer
    * 🔧 ELECTRON FIX: Only connect when audio is actually playing
    * to prevent ACCESS_VIOLATION crashes
+   * 
+   * ⚡ SERVER MODE: Skip connection - audio is played by server via WebRTC
    */
   connectToMixer(): boolean {
+    // Skip local audio connection in server mode
+    if (getIsServerMode()) {
+      console.log(`🌐 [Deck ${this.side.toUpperCase()}] Server mode - skipping local audio connection`);
+      this.isConnectedToMixer = false;
+      return false;
+    }
+
     if (this.isConnectedToMixer) {
       console.log(`✓ [Deck ${this.side.toUpperCase()}] Already connected to mixer`);
       return true;

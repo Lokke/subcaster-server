@@ -4386,6 +4386,175 @@ body.logged-in .wishbox-frame {
   transition: all 0.2s ease;
 }
 
+/* ============================================
+   CONFERENCE PANEL
+   ============================================ */
+
+.conference-panel {
+  background: rgba(0, 0, 0, 0.95);
+  border: 2px solid #444;
+  border-radius: 2px;
+  margin-top: 0.5rem;
+  overflow: hidden;
+  box-shadow: 
+    0 0 5px rgba(68, 68, 68, 0.3),
+    inset 0 0 3px rgba(68, 68, 68, 0.2);
+}
+
+.conference-header {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.3rem;
+  padding: 0.3rem 0.5rem;
+  background: rgba(0, 0, 0, 0.5);
+  border-bottom: 1px solid #333;
+}
+
+.conference-icon {
+  font-size: 12px;
+  color: #666;
+}
+
+.conference-title {
+  font-size: 8px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  color: #888;
+  flex: 1;
+  text-align: left;
+}
+
+.conference-status {
+  font-size: 7px;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+  text-transform: uppercase;
+  padding: 0.15rem 0.4rem;
+  border-radius: 2px;
+  background: rgba(102, 0, 0, 0.3);
+  color: #ff4444;
+  border: 1px solid #660000;
+}
+
+.conference-status.connected {
+  background: rgba(0, 102, 0, 0.3);
+  color: #44ff44;
+  border-color: #006600;
+}
+
+.conference-participants {
+  padding: 0.3rem;
+  max-height: 200px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+
+/* Custom scrollbar for participants */
+.conference-participants::-webkit-scrollbar {
+  width: 4px;
+}
+
+.conference-participants::-webkit-scrollbar-track {
+  background: rgba(0, 0, 0, 0.5);
+}
+
+.conference-participants::-webkit-scrollbar-thumb {
+  background: #444;
+  border-radius: 2px;
+}
+
+.conference-participants::-webkit-scrollbar-thumb:hover {
+  background: #666;
+}
+
+.conference-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.3rem;
+  padding: 1rem 0.5rem;
+  color: #666;
+  font-size: 8px;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+
+.conference-empty .material-icons {
+  font-size: 16px;
+  opacity: 0.5;
+}
+
+.conference-participant {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.25rem 0.4rem;
+  background: rgba(68, 68, 68, 0.1);
+  border: 1px solid #333;
+  border-radius: 2px;
+  transition: all 0.15s ease;
+}
+
+.conference-participant:hover {
+  background: rgba(68, 68, 68, 0.2);
+  border-color: #444;
+}
+
+.conference-participant.speaking {
+  background: rgba(68, 136, 68, 0.2);
+  border-color: #448844;
+  box-shadow: 0 0 5px rgba(68, 136, 68, 0.3);
+}
+
+.participant-icon {
+  font-size: 12px;
+  color: #888;
+  flex-shrink: 0;
+}
+
+.conference-participant.speaking .participant-icon {
+  color: #44ff44;
+}
+
+.participant-name {
+  flex: 1;
+  font-size: 8px;
+  font-weight: 500;
+  letter-spacing: 0.3px;
+  color: #ccc;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.participant-meter {
+  width: 40px;
+  height: 8px;
+  background: rgba(0, 0, 0, 0.5);
+  border: 1px solid #333;
+  border-radius: 1px;
+  overflow: hidden;
+  position: relative;
+  flex-shrink: 0;
+}
+
+.participant-meter-fill {
+  height: 100%;
+  width: 0%;
+  background: linear-gradient(90deg, #448844 0%, #44ff44 100%);
+  transition: width 0.1s ease-out;
+  border-radius: 1px;
+}
+
+.participant-meter-fill.high {
+  background: linear-gradient(90deg, #ff8844 0%, #ff4444 100%);
+}
+
 @keyframes pulse-red {
   0% {
     background: linear-gradient(135deg, #660000 0%, #440000 100%);

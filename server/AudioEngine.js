@@ -12,9 +12,24 @@ import ffmpeg from 'fluent-ffmpeg';
 import ffmpegPath from '@ffmpeg-installer/ffmpeg';
 import { EventEmitter } from 'events';
 import { PassThrough } from 'stream';
+import { execSync } from 'child_process';
+
+// Try to use system ffmpeg first (more stable and up-to-date)
+// Fall back to bundled ffmpeg if system version not available
+let ffmpegBinaryPath;
+try {
+  // Check if system ffmpeg exists
+  execSync('which ffmpeg', { stdio: 'ignore' });
+  ffmpegBinaryPath = 'ffmpeg'; // Use system ffmpeg
+  console.log('✅ Using system FFmpeg');
+} catch (error) {
+  // Fall back to bundled ffmpeg
+  ffmpegBinaryPath = ffmpegPath.path;
+  console.log(`⚠️ System FFmpeg not found, using bundled version: ${ffmpegBinaryPath}`);
+}
 
 // Set ffmpeg path
-ffmpeg.setFfmpegPath(ffmpegPath.path);
+ffmpeg.setFfmpegPath(ffmpegBinaryPath);
 
 /**
  * Single Audio Deck
@@ -38,15 +53,60 @@ class AudioDeck extends EventEmitter {
    */
   async load(url, metadata) {
     console.log(`🎵 [Deck ${this.id}] Loading: ${metadata.title}`);
+    
+    // Clean up any existing ffmpeg process before loading new track
+    if (this.ffmpegProcess) {
+      console.log(`🧹 [Deck ${this.id}] Stopping previous FFmpeg process`);
+      try {
+        this.ffmpegProcess.kill('SIGTERM');
+      } catch (err) {
+        console.warn(`⚠️ [Deck ${this.id}] Error stopping FFmpeg:`, err.message);
+      }
+      this.ffmpegProcess = null;
+    }
+    
+    if (this.audioStream) {
+      try {
+        this.audioStream.destroy();
+      } catch (err) {
+        console.warn(`⚠️ [Deck ${this.id}] Error destroying stream:`, err.message);
+      }
+      this.audioStream = null;
+    }
+    
     this.state = 'loading';
     this.currentTrack = metadata;
     this.emit('stateChange', { deck: this.id, state: this.state, track: metadata });
 
     try {
+      // Extract original URL from proxy URL if present
+      // Format: /api/opensubsonic-stream?url=<encoded-original-url>
+      let ffmpegUrl = url;
+      
+      if (url.includes('/api/opensubsonic-stream?url=')) {
+        try {
+          // Extract the 'url' parameter from the proxy URL
+          const urlMatch = url.match(/[?&]url=([^&]+)/);
+          if (urlMatch && urlMatch[1]) {
+            const decodedUrl = decodeURIComponent(urlMatch[1]);
+            ffmpegUrl = decodedUrl;
+            console.log(`🔧 [Deck ${this.id}] Extracted original URL from proxy`);
+            console.log(`   Proxy: ${url}`);
+            console.log(`   Original: ${ffmpegUrl}`);
+          }
+        } catch (err) {
+          console.warn(`⚠️ [Deck ${this.id}] Failed to extract original URL, using as-is:`, err.message);
+        }
+      } else if (url.startsWith('/')) {
+        // Relative URL - prepend localhost:3002
+        ffmpegUrl = `http://localhost:3002${url}`;
+        console.log(`🔧 [Deck ${this.id}] Normalized relative URL: ${url} → ${ffmpegUrl}`);
+      }
+      
       // Create audio stream from URL using ffmpeg
       this.audioStream = new PassThrough();
       
-      this.ffmpegProcess = ffmpeg(url)
+      this.ffmpegProcess = ffmpeg(ffmpegUrl)
         .format('s16le') // PCM signed 16-bit little-endian
         .audioChannels(2) // Stereo
         .audioFrequency(48000) // 48kHz
@@ -276,8 +336,18 @@ export class AudioEngine extends EventEmitter {
     this.masterVolume = 1.0;
     this.streamVolume = 1.0;
     
-    // Monitor output stream (for browser playback)
+    // Monitor output stream (for browser playback) - DEPRECATED
     this.monitorStream = new PassThrough();
+    
+    // RTP Output to MediaSoup
+    this.rtpProcess = null;
+    this.rtpOutputActive = false;
+    this.rtpTargetIp = null;
+    this.rtpTargetPort = null;
+    
+    // Mixing stream (combines all playing decks)
+    this.mixerStream = new PassThrough();
+    this.startMixing();
     
     // Setup deck event listeners
     Object.values(this.decks).forEach(deck => {
@@ -363,9 +433,141 @@ export class AudioEngine extends EventEmitter {
 
   /**
    * Get monitor audio stream (for browser playback)
+   * @deprecated Use MediaSoup WebRTC instead
    */
   getMonitorStream() {
     return this.monitorStream;
+  }
+
+  /**
+   * Start RTP output to MediaSoup
+   */
+  startRTPOutput(targetIp, targetPort) {
+    if (this.rtpOutputActive) {
+      console.log('⚠️ RTP output already active');
+      return;
+    }
+
+    this.rtpTargetIp = targetIp;
+    this.rtpTargetPort = targetPort;
+
+    console.log(`📡 Starting RTP output to ${targetIp}:${targetPort}`);
+
+    // Create FFmpeg process: PCM → Opus → RTP
+    this.rtpProcess = ffmpeg()
+      .input('pipe:0') // Read from stdin (mixer stream)
+      .inputFormat('s16le') // PCM signed 16-bit little-endian
+      .inputOptions([
+        '-ar 48000', // 48kHz sample rate
+        '-ac 2'      // Stereo
+      ])
+      .audioCodec('libopus')
+      .audioChannels(2)
+      .audioFrequency(48000)
+      .audioBitrate('320k') // 320 kbps Opus
+      .outputOptions([
+        '-application audio', // Optimize for music
+        '-frame_duration 20', // 20ms frames
+        '-vbr off',          // Constant bitrate
+        '-packet_loss 0',    // No packet loss assumed (local)
+        '-f rtp',            // RTP output format
+        `-sdp_file /tmp/mediasoup_${targetPort}.sdp` // SDP file for debugging
+      ])
+      .output(`rtp://${targetIp}:${targetPort}`)
+      .on('start', (commandLine) => {
+        console.log(`🔧 FFmpeg RTP started: ${commandLine}`);
+      })
+      .on('error', (err) => {
+        console.error('❌ FFmpeg RTP error:', err);
+        this.rtpOutputActive = false;
+      })
+      .on('end', () => {
+        console.log('🏁 FFmpeg RTP ended');
+        this.rtpOutputActive = false;
+      });
+
+    // Pipe mixer stream to FFmpeg
+    this.mixerStream.pipe(this.rtpProcess.stdin);
+    this.rtpProcess.run();
+
+    this.rtpOutputActive = true;
+    console.log('✅ RTP output started');
+  }
+
+  /**
+   * Stop RTP output
+   */
+  stopRTPOutput() {
+    if (!this.rtpOutputActive || !this.rtpProcess) {
+      return;
+    }
+
+    console.log('🛑 Stopping RTP output');
+    
+    try {
+      this.rtpProcess.kill('SIGTERM');
+    } catch (err) {
+      console.warn('⚠️ Error stopping RTP process:', err.message);
+    }
+    
+    this.rtpProcess = null;
+    this.rtpOutputActive = false;
+    console.log('✅ RTP output stopped');
+  }
+
+  /**
+   * Start mixing all playing decks into single stream
+   */
+  startMixing() {
+    // This creates a continuous stream that mixes all playing decks
+    // Every 20ms (48000 samples/sec × 2 channels × 2 bytes × 0.02s = 3840 bytes)
+    const CHUNK_SIZE = 3840;
+    const INTERVAL_MS = 20;
+    
+    this.mixingInterval = setInterval(() => {
+      const buffer = Buffer.alloc(CHUNK_SIZE);
+      let hasAudio = false;
+
+      // Mix all playing decks
+      for (const deck of Object.values(this.decks)) {
+        if (deck.state === 'playing' && deck.audioStream) {
+          const chunk = deck.audioStream.read(CHUNK_SIZE);
+          if (chunk && chunk.length === CHUNK_SIZE) {
+            hasAudio = true;
+            
+            // Mix by averaging samples with volume adjustment
+            for (let i = 0; i < CHUNK_SIZE; i += 2) {
+              // Read 16-bit sample
+              const sample = chunk.readInt16LE(i);
+              const volumeAdjusted = Math.round(sample * deck.volume * this.masterVolume);
+              
+              // Mix with existing buffer (sum and clamp)
+              const existing = buffer.readInt16LE(i);
+              const mixed = Math.max(-32768, Math.min(32767, existing + volumeAdjusted));
+              buffer.writeInt16LE(mixed, i);
+            }
+          }
+        }
+      }
+
+      // Write silence or mixed audio
+      if (hasAudio || this.rtpOutputActive) {
+        this.mixerStream.write(buffer);
+        this.monitorStream.write(buffer); // Also for legacy monitor
+      }
+    }, INTERVAL_MS);
+
+    console.log('🎚️ Audio mixer started');
+  }
+
+  /**
+   * Stop mixing
+   */
+  stopMixing() {
+    if (this.mixingInterval) {
+      clearInterval(this.mixingInterval);
+      this.mixingInterval = null;
+    }
   }
 
   /**
@@ -392,6 +594,14 @@ export class AudioEngine extends EventEmitter {
    */
   async cleanup() {
     console.log('🧹 AudioEngine cleanup');
+    
+    // Stop RTP output
+    this.stopRTPOutput();
+    
+    // Stop mixing
+    this.stopMixing();
+    
+    // Clear all decks
     await Promise.all([
       this.decks.a.clear(),
       this.decks.b.clear(),

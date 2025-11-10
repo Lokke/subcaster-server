@@ -32,10 +32,17 @@ export default defineConfig({
     },
     proxy: {
       // Proxy all /api/* requests to unified-server
-      '/api/': {
+      '/api': {
         target: 'http://localhost:3002',
         changeOrigin: true,
         secure: false
+      },
+      // Proxy WebSocket connections to unified-server
+      '/ws': {
+        target: 'ws://localhost:3002',
+        ws: true,
+        changeOrigin: true,
+        rewrite: (path) => path
       }
     }
   }

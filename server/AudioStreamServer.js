@@ -8,15 +8,37 @@
 import { WebSocketServer } from 'ws';
 
 export class AudioStreamServer {
-  constructor(httpServer, audioEngine) {
-    this.audioEngine = audioEngine;
+  constructor(httpServer, audioMixer) {
+    this.audioMixer = audioMixer;
     this.clients = new Set();
+    this.httpServer = httpServer;
     
     // Create WebSocket server for audio streaming
     this.wss = new WebSocketServer({
-      server: httpServer,
-      path: '/ws/audio'
+      noServer: true
     });
+    
+    console.log('🔌 AudioStreamServer WebSocketServer created (noServer mode)');
+    
+    // Register upgrade handler with central router
+    const handleUpgrade = (request, socket, head) => {
+      console.log('✅ AudioStreamServer handling upgrade');
+      this.wss.handleUpgrade(request, socket, head, (ws) => {
+        this.wss.emit('connection', ws, request);
+      });
+    };
+    
+    if (global.wsHandlers) {
+      global.wsHandlers.set('/ws/audio', handleUpgrade);
+      console.log('✅ Registered /ws/audio handler');
+    } else {
+      console.warn('⚠️ global.wsHandlers not available - fallback to direct handling');
+      httpServer.on('upgrade', (request, socket, head) => {
+        if (request.url === '/ws/audio') {
+          handleUpgrade(request, socket, head);
+        }
+      });
+    }
     
     this.setupWebSocketServer();
     this.startAudioStreaming();
@@ -55,13 +77,31 @@ export class AudioStreamServer {
         console.error(`❌ Audio WebSocket error for ${clientId}:`, error);
       });
     });
+    
+    // Heartbeat support for audio clients
+    this.heartbeatInterval = setInterval(() => {
+      for (const ws of Array.from(this.clients)) {
+        try {
+          if (!ws.isAlive) {
+            console.log(`⏳ Terminating dead audio client: ${ws.clientId}`);
+            try { ws.terminate(); } catch (e) {}
+            this.clients.delete(ws);
+            continue;
+          }
+          ws.isAlive = false;
+          ws.ping(() => {});
+        } catch (err) {
+          console.error('❌ Audio heartbeat error:', err);
+        }
+      }
+    }, 30000);
   }
 
   /**
    * Start audio streaming
    */
   startAudioStreaming() {
-    const monitorStream = this.audioEngine.getMonitorStream();
+    const monitorStream = this.audioMixer.getMonitorStream();
     
     if (!monitorStream) {
       console.warn('⚠️ No monitor stream available');
@@ -85,14 +125,18 @@ export class AudioStreamServer {
    */
   broadcastAudio(chunk) {
     if (this.clients.size === 0) return;
-    
-    this.clients.forEach(client => {
+    // Send to snapshot to avoid mutation while iterating
+    Array.from(this.clients).forEach(client => {
       if (client.readyState === 1) { // OPEN
         try {
           client.send(chunk);
         } catch (error) {
-          console.error('❌ Error sending audio to client:', error);
+          console.error(`❌ Error sending audio to ${client.clientId}:`, error);
+          try { client.terminate(); } catch (e) {}
+          this.clients.delete(client);
         }
+      } else {
+        this.clients.delete(client);
       }
     });
   }
@@ -102,6 +146,7 @@ export class AudioStreamServer {
    */
   cleanup() {
     console.log('🧹 AudioStreamServer cleanup');
+    if (this.heartbeatInterval) clearInterval(this.heartbeatInterval);
     this.wss.close();
   }
 }

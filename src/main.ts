@@ -11,7 +11,12 @@ import * as THREE from 'three';
 // 🚀 WebGPU & Hardware Acceleration
 import { initWebGPU, isWebGPUAvailable, enableHardwareAcceleration } from './webgpu-utils';
 
-// 🎵 NEW AUDIO SYSTEM - Phase 1, 2, 3, 4, 5 & 6
+// 🎵 SERVER-BASED AUDIO SYSTEM
+import { ServerClient, type DeckState } from './serverClient';
+import { MediaSoupClient } from './mediasoupClient';
+import { MicrophoneClient } from './microphoneClient';
+
+// 🎵 LOCAL AUDIO SYSTEM (Fallback)
 import * as AudioManager from './audio/AudioManager';
 import { getOrCreateSourceNode as getOrCreateSourceNodeNew, removeSourceNode, hasSourceNode } from './audio/SourceNodeCache';
 import * as Mixer from './audio/Mixer';
@@ -24,6 +29,22 @@ import { CustomWaveform, createCustomWaveform } from './audio/CustomWaveform';
 import { ContextMenu, showAlbumContextMenu, showSongContextMenu } from './contextMenu';
 
 console.log("SubCaster loaded!");
+
+// ========================================
+// 🔌 SERVER AUDIO SYSTEM
+// ========================================
+let serverClient: ServerClient | null = null;
+let mediaSoupClient: MediaSoupClient | null = null;
+let microphoneClient: MicrophoneClient | null = null;
+let isServerMode: boolean = false; // Will be set to true if server connection succeeds
+
+/**
+ * Check if we're in server mode (audio comes from server via WebRTC)
+ * @returns true if connected to server, false if playing locally
+ */
+export function getIsServerMode(): boolean {
+  return isServerMode;
+}
 
 // ========================================
 // 🔙 NAVIGATION HISTORY SYSTEM
@@ -239,6 +260,650 @@ function getConfigValue(key: string): string | undefined {
   console.warn(`⚠️ Config key '${key}' not found in runtime config from backend`);
   
   return undefined;
+}
+
+// ========================================
+// 🔌 SERVER AUDIO SYSTEM INITIALIZATION
+// ========================================
+
+/**
+ * Initialize server-based audio system
+ * Connects to server for deck control via WebSocket Commands
+ * Audio playback via MediaSoup WebRTC (replaces browser AudioContext)
+ */
+async function initializeServerAudio(): Promise<void> {
+  console.log('🔌 Initializing server audio connection...');
+  
+  try {
+    // Close existing connections (prevent leaks on page reload)
+    if (serverClient) {
+      console.log('🧹 Closing existing command connection...');
+      await serverClient.disconnect();
+      serverClient = null;
+    }
+    
+    if (mediaSoupClient) {
+      console.log('🧹 Closing existing MediaSoup connection...');
+      mediaSoupClient.disconnect();
+      mediaSoupClient = null;
+    }
+    
+    // Create server client (for commands only, no audio)
+    serverClient = new ServerClient();
+    
+    // Setup event handlers
+    serverClient.onConnected = () => {
+      console.log('✅ Connected to server command engine');
+      isServerMode = true;
+      
+      // Control is now automatically requested in ServerClient after welcome message
+      
+      // Update UI to show server mode
+      updateServerConnectionStatus(true);
+      
+      // Connect MediaSoup for audio (WebRTC) - non-blocking
+      console.log('🎧 Connecting to MediaSoup WebRTC audio...');
+      mediaSoupClient = new MediaSoupClient('ws://localhost:3002/ws/mediasoup');
+      
+      // Setup MediaSoup callbacks for conference UI
+      mediaSoupClient.onParticipantJoined = (participantId: string, isMusic: boolean) => {
+        updateConferenceParticipants();
+      };
+      
+      mediaSoupClient.onParticipantLeft = (participantId: string) => {
+        updateConferenceParticipants();
+      };
+      
+      mediaSoupClient.onAudioLevel = (participantId: string, level: number) => {
+        updateParticipantAudioLevel(participantId, level);
+      };
+      
+      // Connect asynchronously without blocking
+      mediaSoupClient.connect()
+        .then(() => {
+          console.log('✅ Connected to MediaSoup WebRTC audio');
+          updateConferenceStatus(true);
+        })
+        .catch((err) => {
+          console.error('❌ MediaSoup connection failed:', err);
+          updateConferenceStatus(false);
+        });
+    };
+    
+    serverClient.onDisconnected = () => {
+      console.warn('📴 Disconnected from server');
+      isServerMode = false;
+      updateServerConnectionStatus(false);
+      
+      // Disconnect MediaSoup
+      if (mediaSoupClient) {
+        mediaSoupClient.disconnect();
+        mediaSoupClient = null;
+      }
+      
+      // Update conference UI
+      updateConferenceStatus(false);
+      updateConferenceParticipants();
+      
+      // Try to reconnect after 5 seconds
+      setTimeout(() => {
+        console.log('🔄 Attempting to reconnect to server...');
+        initializeServerAudio().catch(err => {
+          console.error('❌ Reconnect failed:', err);
+        });
+      }, 5000);
+    };
+    
+    serverClient.onStateChange = (state: DeckState) => {
+      console.log('🎵 Server deck state changed:', state);
+      updateDeckUIFromServer(state);
+    };
+    
+    serverClient.onPositionUpdate = (deck: string, position: number) => {
+      updateDeckPosition(deck as 'a' | 'b' | 'c' | 'd', position);
+    };
+    
+    serverClient.onControlGranted = () => {
+      console.log('🎛️ DJ control granted');
+      showNotification('DJ Control erhalten', 'success');
+    };
+    
+    serverClient.onControlDenied = () => {
+      console.warn('🎛️ DJ control denied');
+      showNotification('DJ Control verweigert - ein anderer DJ ist aktiv', 'warning');
+    };
+    
+    serverClient.onError = (error: string) => {
+      console.error('❌ Server error:', error);
+      showNotification(`Server Error: ${error}`, 'error');
+    };
+    
+    serverClient.onInitialStateSync = (state: any) => {
+      console.log('🔄 Initial state sync from server:', state);
+      
+      // Sync all deck states
+      if (state.decks) {
+        Object.entries(state.decks).forEach(([deckId, deckState]: [string, any]) => {
+          if (deckState.track && deckState.state !== 'empty') {
+            console.log(`📀 Syncing deck ${deckId.toUpperCase()}: ${deckState.track.title}`);
+            syncDeckFromServer(deckId as 'a' | 'b' | 'c' | 'd', deckState);
+          }
+        });
+      }
+      
+      // Sync queue
+      if (state.queue) {
+        console.log(`📋 Syncing queue: ${state.queue.length} items`);
+        syncQueueFromServer(state.queue);
+      }
+    };
+    
+    serverClient.onQueueUpdate = (queue: any[]) => {
+      console.log(`📋 Queue update from server: ${queue.length} items`);
+      syncQueueFromServer(queue);
+    };
+    
+    // Connect to server
+    await serverClient.connect();
+    console.log('✅ Server audio initialized');
+    
+  } catch (error) {
+    console.error('❌ Failed to initialize server audio:', error);
+    isServerMode = false;
+    throw error;
+  }
+}
+
+/**
+ * Update UI based on server deck state
+ */
+function updateDeckUIFromServer(state: DeckState): void {
+  const side = state.id.toLowerCase() as 'a' | 'b' | 'c' | 'd';
+  
+  console.log(`🎵 Updating deck ${side.toUpperCase()} UI:`, state);
+  
+  // Handle empty state (deck cleared)
+  if (state.state === 'empty') {
+    console.log(`🧹 Deck ${side.toUpperCase()} cleared`);
+    
+    // Clear track info
+    const titleElement = document.getElementById(`track-title-${side}`);
+    const artistElement = document.getElementById(`track-artist-${side}`);
+    const durationElement = document.getElementById(`duration-${side}`);
+    const currentTimeElement = document.getElementById(`current-time-${side}`);
+    
+    if (titleElement) titleElement.textContent = '';
+    if (artistElement) artistElement.textContent = '';
+    if (durationElement) durationElement.textContent = '0:00';
+    if (currentTimeElement) currentTimeElement.textContent = '0:00';
+    
+    // Clear waveforms
+    clearWaveform(side);
+    
+    // Reset play/pause button
+    const playPauseBtn = document.querySelector(`.player[data-player="${side}"] .play-pause-btn`);
+    if (playPauseBtn) {
+      const icon = playPauseBtn.querySelector('.material-icons');
+      if (icon) icon.textContent = 'play_arrow';
+    }
+    
+    // Clear local song reference
+    deckSongs[side] = null;
+    
+    return;
+  }
+  
+  // Handle loading state
+  if (state.state === 'loading') {
+    console.log(`⏳ Deck ${side.toUpperCase()} loading...`);
+    // Show loading indicator if needed
+    return;
+  }
+  
+  // Update track info
+  if (state.track) {
+    const titleElement = document.getElementById(`track-title-${side}`);
+    const artistElement = document.getElementById(`track-artist-${side}`);
+    
+    if (titleElement) titleElement.textContent = state.track.title;
+    if (artistElement) artistElement.textContent = state.track.artist;
+    
+    // Update waveform info
+    const waveformContainer = document.getElementById(`waveform-container-${side}`);
+    if (waveformContainer) {
+      const waveformInfo = waveformContainer.querySelector('.waveform-track-info');
+      if (waveformInfo) {
+        const titleEl = waveformInfo.querySelector('.track-title');
+        const artistEl = waveformInfo.querySelector('.track-artist');
+        const albumEl = waveformInfo.querySelector('.track-album');
+        
+        if (titleEl) titleEl.textContent = state.track.title;
+        if (artistEl) artistEl.textContent = state.track.artist;
+        if (albumEl) albumEl.textContent = state.track.album || '';
+      }
+    }
+    
+    // Update duration display
+    if (state.track.duration > 0) {
+      const durationElement = document.getElementById(`duration-${side}`);
+      if (durationElement) {
+        durationElement.textContent = formatTime(state.track.duration);
+      }
+    }
+    
+    // Load waveform if track changed and we have OpenSubsonic client
+    if (state.state === 'ready' && openSubsonicClient) {
+      // Check if waveform already loaded for this track
+      const existingWaveform = waveformsZoom[side];
+      const needsWaveform = !existingWaveform || !existingWaveform.isReady();
+      
+      if (needsWaveform && state.track && state.track.title) {
+        console.log(`🌊 Loading waveform for deck ${side.toUpperCase()}: ${state.track.title}`);
+        loadWaveformForDeck(side, state.track).catch(err => {
+          console.error(`❌ Failed to load waveform for deck ${side}:`, err);
+        });
+      }
+    }
+  }
+  
+  // Update play/pause button
+  const playPauseBtn = document.querySelector(`.player[data-player="${side}"] .play-pause-btn`);
+  if (playPauseBtn) {
+    const icon = playPauseBtn.querySelector('.material-icons');
+    if (icon) {
+      icon.textContent = state.state === 'playing' ? 'pause' : 'play_arrow';
+    }
+  }
+  
+  // Handle error state
+  if (state.state === 'error') {
+    console.error(`❌ Deck ${side.toUpperCase()} error`);
+    showNotification(`Deck ${side.toUpperCase()} Error`, 'error');
+  }
+}
+
+/**
+ * Load waveform for a deck (called when server loads a track)
+ */
+async function loadWaveformForDeck(side: 'a' | 'b' | 'c' | 'd', track: any): Promise<void> {
+  if (!openSubsonicClient || !track.id) {
+    console.warn(`⚠️ Cannot load waveform: missing openSubsonicClient or track.id`);
+    return;
+  }
+  
+  try {
+    console.log(`🌊 Loading waveform for deck ${side.toUpperCase()}: ${track.title}`);
+    
+    // Initialize waveforms for this deck if not already done
+    let audioElement = deckAudioElements[side];
+    if (!audioElement || !waveformsZoom[side] || !waveformsOverview[side]) {
+      audioElement = initializeWaveforms(side, track.duration);
+    }
+    
+    // Get stream URL
+    const streamUrl = openSubsonicClient.getStreamUrl(track.id);
+    
+    // Load waveform data (both zoom and overview share same data)
+    const waveformZoom = waveformsZoom[side];
+    const waveformOverview = waveformsOverview[side];
+    
+    if (waveformZoom && waveformOverview) {
+      try {
+        // Load waveform (fetches from server's /api/waveform endpoint)
+        await waveformZoom.load(streamUrl);
+        await waveformOverview.load(streamUrl);
+        console.log(`✅ Waveform loaded for deck ${side.toUpperCase()}`);
+      } catch (error) {
+        console.error(`❌ Failed to load waveform for deck ${side}:`, error);
+      }
+    }
+    
+  } catch (error) {
+    console.error(`❌ Error loading waveform for deck ${side}:`, error);
+  }
+}
+
+/**
+ * Update deck playback position
+ */
+function updateDeckPosition(side: 'a' | 'b' | 'c' | 'd', position: number): void {
+  // Update time display
+  const currentTimeElement = document.getElementById(`current-time-${side}`);
+  if (currentTimeElement) {
+    currentTimeElement.textContent = formatTime(position);
+  }
+  
+  // Update progress bar
+  const audio = getAudioElement(side);
+  if (audio && audio.duration > 0) {
+    const progressBar = document.getElementById(`progress-${side}`) as HTMLInputElement;
+    if (progressBar) {
+      const percent = (position / audio.duration) * 100;
+      progressBar.value = String(percent);
+    }
+  }
+  
+  // Update waveform progress
+  const waveformContainer = document.getElementById(`waveform-container-${side}`);
+  if (waveformContainer) {
+    const customWaveform = (waveformContainer as any).__customWaveform;
+    if (customWaveform && audio && audio.duration > 0) {
+      customWaveform.setProgress(position / audio.duration);
+    }
+  }
+}
+
+/**
+ * Sync deck state from server (on initial connect or reconnect)
+ */
+async function syncDeckFromServer(side: 'a' | 'b' | 'c' | 'd', deckState: any): Promise<void> {
+  console.log(`🔄 Syncing deck ${side.toUpperCase()} from server:`, deckState);
+  
+  if (!deckState.track) {
+    console.log(`  ℹ️  Deck ${side.toUpperCase()} is empty, skipping`);
+    return;
+  }
+  
+  try {
+    // Update local track info
+    const track = deckState.track;
+    
+    // Create song object from metadata (use REAL OpenSubsonic ID!)
+    const song: OpenSubsonicSong = {
+      id: track.id || `server-track-${Date.now()}`, // Fallback only if no ID
+      title: track.title,
+      artist: track.artist,
+      album: track.album || '',
+      duration: track.duration || 0,
+      coverArt: track.coverArt || '',
+      size: 0,
+      suffix: 'mp3',
+      bitRate: 320,
+      year: 0,
+      genre: '',
+      playCount: 0
+    };
+    
+    // Store in deckSongs for UI
+    deckSongs[side] = song;
+    
+    // Update UI elements
+    const titleElement = document.getElementById(`track-title-${side}`);
+    const artistElement = document.getElementById(`track-artist-${side}`);
+    const durationElement = document.getElementById(`duration-${side}`);
+    
+    if (titleElement) titleElement.textContent = track.title;
+    if (artistElement) artistElement.textContent = track.artist;
+    if (durationElement && track.duration > 0) {
+      durationElement.textContent = formatTime(track.duration);
+    }
+    
+    // Update play/pause button state
+    const playPauseBtn = document.querySelector(`.player[data-player="${side}"] .play-pause-btn`);
+    if (playPauseBtn) {
+      const icon = playPauseBtn.querySelector('.material-icons');
+      if (icon) {
+        icon.textContent = deckState.state === 'playing' ? 'pause' : 'play_arrow';
+      }
+    }
+    
+    // Load waveform if we have a song URL
+    if (openSubsonicClient && song.id) {
+      console.log(`🌊 Loading waveform for deck ${side.toUpperCase()}: ${song.title}`);
+      
+      // Initialize waveforms for this deck
+      const audioElement = initializeWaveforms(side, track.duration);
+      
+      // Get stream URL
+      const streamUrl = openSubsonicClient.getStreamUrl(song.id);
+      
+      // Load waveform (this will fetch from server's /api/waveform endpoint)
+      const waveformZoom = waveformsZoom[side];
+      const waveformOverview = waveformsOverview[side];
+      
+      if (waveformZoom && waveformOverview) {
+        try {
+          // Load waveform data (both zoom and overview share same data)
+          await waveformZoom.load(streamUrl);
+          await waveformOverview.load(streamUrl);
+          console.log(`✅ Waveform loaded for deck ${side.toUpperCase()}`);
+        } catch (error) {
+          console.error(`❌ Failed to load waveform for deck ${side}:`, error);
+        }
+      }
+    }
+    
+    console.log(`✅ Deck ${side.toUpperCase()} synced from server`);
+    
+  } catch (error) {
+    console.error(`❌ Failed to sync deck ${side} from server:`, error);
+  }
+}
+
+/**
+ * Sync queue from server
+ */
+function syncQueueFromServer(serverQueue: any[]): void {
+  console.log(`🔄 Syncing queue from server: ${serverQueue.length} items`);
+  
+  // Clear local queue
+  queue = [];
+  
+  // Convert server queue items to local format
+  serverQueue.forEach((serverItem: any) => {
+    if (serverItem.type === 'song' && serverItem.metadata) {
+      // Create song object from metadata
+      const song: OpenSubsonicSong = {
+        id: serverItem.metadata.id || `server-song-${Date.now()}`,
+        title: serverItem.metadata.title,
+        artist: serverItem.metadata.artist,
+        album: serverItem.metadata.album || '',
+        duration: serverItem.metadata.duration || 0,
+        size: 0,
+        suffix: 'mp3',
+        bitRate: 320,
+        year: 0,
+        genre: '',
+        coverArt: '',
+        playCount: 0
+      };
+      
+      const queueItem: QueueItem = {
+        type: 'song',
+        song: song,
+        assignedToDeck: serverItem.assignedToDeck || null,
+        id: serverItem.id || `song-${song.id}-${Date.now()}`
+      };
+      
+      queue.push(queueItem);
+    } else if (serverItem.type === 'microphone') {
+      queue.push(createMicrophoneQueueItem());
+    }
+  });
+  
+  // Update queue display
+  updateQueueDisplay();
+  
+  console.log(`✅ Queue synced from server: ${queue.length} items`);
+}
+
+/**
+ * Update server connection status in UI
+ */
+function updateServerConnectionStatus(connected: boolean): void {
+  // Create or update status indicator
+  let statusIndicator = document.getElementById('server-status-indicator');
+  
+  if (!statusIndicator) {
+    statusIndicator = document.createElement('div');
+    statusIndicator.id = 'server-status-indicator';
+    statusIndicator.style.cssText = `
+      position: fixed;
+      top: 10px;
+      right: 10px;
+      padding: 8px 12px;
+      border-radius: 4px;
+      font-size: 12px;
+      z-index: 10000;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    `;
+    document.body.appendChild(statusIndicator);
+  }
+  
+  if (connected) {
+    statusIndicator.style.backgroundColor = '#43b581';
+    statusIndicator.style.color = 'white';
+    statusIndicator.innerHTML = `
+      <span class="material-icons" style="font-size: 16px;">cloud_done</span>
+      Server verbunden
+    `;
+  } else {
+    statusIndicator.style.backgroundColor = '#f04747';
+    statusIndicator.style.color = 'white';
+    statusIndicator.innerHTML = `
+      <span class="material-icons" style="font-size: 16px;">cloud_off</span>
+      Server getrennt
+    `;
+  }
+}
+
+// ========================================
+// 🎤 CONFERENCE UI MANAGEMENT
+// ========================================
+
+/**
+ * Update conference connection status
+ */
+function updateConferenceStatus(connected: boolean): void {
+  const statusElement = document.getElementById('conference-status');
+  if (!statusElement) return;
+  
+  if (connected) {
+    statusElement.textContent = 'Connected';
+    statusElement.classList.add('connected');
+  } else {
+    statusElement.textContent = 'Disconnected';
+    statusElement.classList.remove('connected');
+  }
+}
+
+/**
+ * Update conference participants list
+ */
+function updateConferenceParticipants(): void {
+  const participantsContainer = document.getElementById('conference-participants');
+  if (!participantsContainer || !mediaSoupClient) return;
+  
+  // Get all participants from MediaSoupClient using public method
+  const streams = mediaSoupClient.getStreams();
+  
+  // Clear container
+  participantsContainer.innerHTML = '';
+  
+  // Check if empty
+  if (streams.size === 0) {
+    participantsContainer.innerHTML = `
+      <div class="conference-empty">
+        <span class="material-icons">person_off</span>
+        <span>No participants</span>
+      </div>
+    `;
+    return;
+  }
+  
+  // Add each participant
+  streams.forEach((streamInfo, streamId) => {
+    const isMusicStream = streamId === 'music';
+    
+    const participantEl = document.createElement('div');
+    participantEl.className = 'conference-participant';
+    participantEl.dataset.participantId = streamId;
+    
+    // Use different icon for server music vs users
+    const icon = isMusicStream ? 'music_note' : 'person';
+    
+    participantEl.innerHTML = `
+      <span class="material-icons participant-icon">${icon}</span>
+      <span class="participant-name">${streamInfo.label || 'Unknown'}</span>
+      <div class="participant-meter">
+        <div class="participant-meter-fill"></div>
+      </div>
+    `;
+    
+    participantsContainer.appendChild(participantEl);
+  });
+}
+
+/**
+ * Update audio level for a participant
+ */
+function updateParticipantAudioLevel(participantId: string, level: number): void {
+  const participantEl = document.querySelector(`[data-participant-id="${participantId}"]`);
+  if (!participantEl) return;
+  
+  const meterFill = participantEl.querySelector('.participant-meter-fill') as HTMLElement;
+  if (!meterFill) return;
+  
+  // Update meter width (0-100%)
+  const percentage = Math.min(level * 100, 100);
+  meterFill.style.width = `${percentage}%`;
+  
+  // Add 'high' class if level is high
+  if (level > 0.7) {
+    meterFill.classList.add('high');
+  } else {
+    meterFill.classList.remove('high');
+  }
+  
+  // Add 'speaking' class to participant
+  if (level > 0.1) {
+    participantEl.classList.add('speaking');
+    
+    // Remove after 200ms of silence
+    setTimeout(() => {
+      if (meterFill.style.width === '0%') {
+        participantEl.classList.remove('speaking');
+      }
+    }, 200);
+  } else {
+    meterFill.style.width = '0%';
+  }
+}
+
+/**
+ * Show notification toast
+ */
+function showNotification(message: string, type: 'success' | 'warning' | 'error' = 'success'): void {
+  const toast = document.createElement('div');
+  toast.style.cssText = `
+    position: fixed;
+    bottom: 20px;
+    right: 20px;
+    padding: 12px 20px;
+    border-radius: 4px;
+    color: white;
+    font-size: 14px;
+    z-index: 10001;
+    animation: slideIn 0.3s ease;
+  `;
+  
+  const colors = {
+    success: '#43b581',
+    warning: '#faa61a',
+    error: '#f04747'
+  };
+  
+  toast.style.backgroundColor = colors[type];
+  toast.textContent = message;
+  
+  document.body.appendChild(toast);
+  
+  setTimeout(() => {
+    toast.style.animation = 'slideOut 0.3s ease';
+    setTimeout(() => toast.remove(), 300);
+  }, 3000);
 }
 
 // Blacklisted Genres für Live-Streaming
@@ -597,6 +1262,20 @@ function cleanupAudioResources(): void {
   console.log('🧹 Cleaning up audio resources...');
   
   try {
+    // Disconnect server client (commands)
+    if (serverClient) {
+      console.log('🔌 Disconnecting server client...');
+      serverClient.disconnect();
+      serverClient = null;
+    }
+    
+    // Disconnect MediaSoup (audio)
+    if (mediaSoupClient) {
+      console.log('🔌 Disconnecting MediaSoup client...');
+      mediaSoupClient.disconnect();
+      mediaSoupClient = null;
+    }
+    
     // Stop volume meter animation loop (Phase 6)
     stopVolumeMeterAnimationLoop();
     
@@ -3378,94 +4057,15 @@ async function checkConfigurationAndInitialize() {
     source: backendConfigLoaded ? 'backend (secure)' : 'build-time (insecure)',
   });
   
-  // 🚀 PRODUCTION MODE: Skip setup wizard and load directly from server
-  console.log('� Production mode detected - loading config from server API...');
+  // 🚀 PRODUCTION MODE: Initialize app directly
+  console.log('🚀 Production mode - initializing app with loaded config...');
   
-  try {
-    const response = await fetch('/api/setup-status');
-    const setupStatus = await response.json();
-    
-    console.log('📡 Server setup status:', setupStatus);
-    
-    if (setupStatus.configExists && setupStatus.hasContent) {
-      console.log('✅ Server configuration found - loading runtime config');
-      
-      // Load runtime configuration from server
-      const configResponse = await fetch('/api/config');
-      const configData = await configResponse.json();
-      
-      // API returns config directly (not wrapped in { success: true, config: {...} })
-      if (configData && configData.opensubsonic) {
-        console.log('📡 Runtime config loaded:', configData);
-        
-        // Map backend config to old VITE_* format for compatibility
-        runtimeConfig = {
-          'VITE_OPENSUBSONIC_URL': configData.opensubsonic.url,
-          'VITE_OPENSUBSONIC_USERNAME': configData.opensubsonic.username,
-          'VITE_AZURACAST_SERVERS': configData.azuracast.servers,
-          'VITE_AZURACAST_STATION_ID': configData.azuracast.stationId,
-          'VITE_DISCORD_CHANNEL_ID': configData.discord.channelId,
-          'VITE_DISCORD_GUILD_ID': configData.discord.guildId,
-          'VITE_STREAM_BITRATE': configData.stream.bitrate,
-          'VITE_STREAM_SAMPLE_RATE': configData.stream.sampleRate,
-          'VITE_DECK_CONFIGURATION': configData.deckConfiguration,
-          'VITE_USE_UNIFIED_LOGIN': String(configData.unifiedLogin.enabled),
-        };
-        
-        (window as any).runtimeConfig = runtimeConfig;
-        (window as any).getConfigValue = getConfigValue;
-        
-        console.log('🔄 Runtime configuration stored globally');
-        console.log('🚀 Calling initializeFullApp()...');
-        initializeFullApp();
-      } else {
-        console.log('❌ Failed to load runtime config - trying app initialization');
-        initializeFullApp();
-      }
-    } else {
-      console.log('❌ No server configuration found - trying app initialization');
-      console.log('🔧 Calling initializeFullApp()...');
-      initializeFullApp();
-    }
-  } catch (error) {
-    console.error('❌ Error checking server configuration:', error);
-    console.log('� Checking localStorage for offline config (mobile/Capacitor mode)...');
-    
-    // Try to load from localStorage (for mobile/offline mode)
-    const localStorageConfig = localStorage.getItem('subcaster-config');
-    if (localStorageConfig) {
-      try {
-        const configData = JSON.parse(localStorageConfig);
-        console.log('📱 Config loaded from localStorage:', configData);
-        
-        // Map to runtime config format
-        runtimeConfig = {
-          'VITE_OPENSUBSONIC_URL': configData.opensubsonic?.url || '',
-          'VITE_OPENSUBSONIC_USERNAME': configData.opensubsonic?.username || '',
-          'VITE_AZURACAST_SERVERS': configData.azuracast?.servers || '',
-          'VITE_AZURACAST_STATION_ID': String(configData.azuracast?.stationId || '1'),
-          'VITE_DISCORD_CHANNEL_ID': configData.discord?.channelId || '',
-          'VITE_DISCORD_GUILD_ID': configData.discord?.guildId || '',
-          'VITE_STREAM_BITRATE': String(configData.streaming?.bitrate || '128'),
-          'VITE_STREAM_SAMPLE_RATE': String(configData.streaming?.sampleRate || '44100'),
-          'VITE_DECK_CONFIGURATION': 'four-decks',
-          'VITE_USE_UNIFIED_LOGIN': String(configData.unifiedLogin?.enabled || false),
-        };
-        
-        (window as any).runtimeConfig = runtimeConfig;
-        (window as any).getConfigValue = getConfigValue;
-        
-        console.log('🔄 Runtime configuration loaded from localStorage');
-        console.log('🚀 Calling initializeFullApp()...');
-        initializeFullApp();
-        return;
-      } catch (parseError) {
-        console.error('❌ Failed to parse localStorage config:', parseError);
-      }
-    }
-    
-    console.log('�🔧 Falling back to setup wizard due to API error');
-    showSetupWizardOnly();
+  if (backendConfigLoaded) {
+    console.log('✅ Config loaded - starting full app initialization');
+    initializeFullApp();
+  } else {
+    console.error('❌ No configuration available - cannot start app');
+    alert('Configuration could not be loaded. Please check server connection.');
   }
 }
 
@@ -3517,17 +4117,29 @@ function initializeFullApp() {
   // Display current version
   displayCurrentVersion();
   
-  // 🎵 CRITICAL: Initialize audio infrastructure EARLY
+  // Initialize conference UI (set to disconnected initially)
+  updateConferenceStatus(false);
+  updateConferenceParticipants();
+  
+  // 🔌 INITIALIZE SERVER AUDIO CONNECTION
+  console.log('🔌 Attempting to connect to server audio engine...');
+  initializeServerAudio().catch(err => {
+    console.error('❌ Server audio connection failed, falling back to local audio:', err);
+    isServerMode = false;
+    updateConferenceStatus(false);
+  });
+  
+  // 🎵 CRITICAL: Initialize audio infrastructure EARLY (for fallback)
   // This prevents audio stoppage when microphone is activated later
-  console.log('🎵 Initializing audio infrastructure...');
+  console.log('🎵 Initializing local audio infrastructure (fallback)...');
   initializeAudioMixing().then(success => {
     if (success) {
-      console.log('✅ Audio infrastructure ready');
+      console.log('✅ Local audio infrastructure ready');
     } else {
-      console.error('❌ Audio infrastructure initialization failed');
+      console.error('❌ Local audio infrastructure initialization failed');
     }
   }).catch(err => {
-    console.error('❌ Audio infrastructure error:', err);
+    console.error('❌ Local audio infrastructure error:', err);
   });
   
   // 1. Initialize Player Decks first (creates HTML)
@@ -5304,7 +5916,9 @@ function addDragListeners(container: Element) {
         id: albumId,
         name: albumName,
         artist: artistName,
-        artistId: albumCard.dataset.artistId || ''
+        artistId: albumCard.dataset.artistId || '',
+        songCount: 0,
+        duration: 0
       };
       
       showAlbumContextMenu(mouseEvent, album, openSubsonicClient, addToQueue, contextMenu);
@@ -10161,6 +10775,35 @@ function setupAudioPlayer(side: 'a' | 'b' | 'c' | 'd', audio: HTMLAudioElement) 
   
   // Control Button Event Listeners
   playPauseBtn?.addEventListener('click', () => {
+    // ========================================
+    // 🔌 SERVER MODE: Send play/pause command to server
+    // ========================================
+    if (isServerMode && serverClient) {
+      // Check if we have a track loaded
+      const hasSong = deckSongs[side] !== null;
+      if (!hasSong) {
+        console.log(`❌ No track loaded on Player ${side}`);
+        showError(`No track loaded on Player ${side.toUpperCase()}`);
+        return;
+      }
+      
+      // Toggle play/pause based on current button state
+      const isCurrentlyPlaying = playPauseBtn.classList.contains('playing');
+      
+      if (isCurrentlyPlaying) {
+        console.log(`⏸️ SERVER MODE: Pausing deck ${side.toUpperCase()}`);
+        serverClient.pause(side);
+      } else {
+        console.log(`▶️ SERVER MODE: Playing deck ${side.toUpperCase()}`);
+        serverClient.play(side);
+      }
+      
+      return;
+    }
+    
+    // ========================================
+    // 💻 LOCAL MODE: Original implementation (fallback)
+    // ========================================
     const wavesurferZoom = waveformsZoom[side];
     const wavesurferOverview = waveformsOverview[side];
     
@@ -10176,7 +10819,7 @@ function setupAudioPlayer(side: 'a' | 'b' | 'c' | 'd', audio: HTMLAudioElement) 
       
       if (audio.src) {
         audio.play().catch(e => {
-          console.error(`? Play error on Player ${side}:`, e);
+          console.error(`❌ Play error on Player ${side}:`, e);
           showError(`Cannot play on Player ${side.toUpperCase()}: ${e.message}`);
         });
         
@@ -10203,7 +10846,7 @@ function setupAudioPlayer(side: 'a' | 'b' | 'c' | 'd', audio: HTMLAudioElement) 
         if (icon) icon.textContent = 'pause';
         playPauseBtn.classList.add('playing');
       } else {
-        console.log(`? No track loaded on Player ${side}`);
+        console.log(`❌ No track loaded on Player ${side}`);
         showError(`No track loaded on Player ${side.toUpperCase()}`);
       }
     } else {
@@ -10466,7 +11109,68 @@ async function loadTrackToPlayer(side: 'a' | 'b' | 'c' | 'd', song: OpenSubsonic
   console.log(`Loading "${song.title}" to Player ${side.toUpperCase()}${autoPlay ? ' (auto-play)' : ''}`);
   
   // ========================================
-  // 🔒 CHECK LOADING LOCK - PREVENT SIMULTANEOUS LOADS
+  // � SERVER MODE: Send command to server
+  // ========================================
+  if (isServerMode && serverClient) {
+    console.log('🔌 SERVER MODE: Sending load command to server');
+    
+    // Get stream URL
+    const streamUrl = openSubsonicClient.getStreamUrl(song.id);
+    
+    // Prepare metadata (INCLUDE MEDIA ID!)
+    const metadata = {
+      id: song.id,  // OpenSubsonic Media ID
+      title: song.title,
+      artist: song.artist,
+      album: song.album || '',
+      duration: song.duration || 0,
+      coverArt: song.coverArt || ''
+    };
+    
+    // Send load command to server
+    serverClient.loadTrack(side, streamUrl, metadata);
+    
+    // Register song location locally
+    registerSongLocation(song.id, { type: 'deck', deck: side });
+    
+    // Remove from queue if present
+    const queueIndex = queue.findIndex(item => 
+      isSongQueueItem(item) && item.song?.id === song.id
+    );
+    if (queueIndex !== -1) {
+      queue.splice(queueIndex, 1);
+      updateQueueDisplay();
+      console.log(`🗑️ Removed "${song.title}" from queue (moved to deck ${side.toUpperCase()})`);
+    }
+    
+    // Store song data locally for UI
+    deckSongs[side] = song;
+    
+    // Update local UI immediately (server will send state updates too)
+    const titleElement = document.getElementById(`track-title-${side}`);
+    const artistElement = document.getElementById(`track-artist-${side}`);
+    if (titleElement) titleElement.textContent = song.title;
+    if (artistElement) artistElement.textContent = song.artist;
+    
+    // Autoplay if requested
+    if (autoPlay) {
+      // Wait a moment for server to load, then play
+      setTimeout(() => {
+        serverClient!.play(side);
+      }, 1000);
+    }
+    
+    console.log(`✅ SERVER MODE: Load command sent for deck ${side.toUpperCase()}`);
+    return;
+  }
+  
+  // ========================================
+  // 💻 LOCAL MODE: Original implementation (fallback)
+  // ========================================
+  console.log('💻 LOCAL MODE: Loading track locally');
+  
+  // ========================================
+  // �🔒 CHECK LOADING LOCK - PREVENT SIMULTANEOUS LOADS
   // ========================================
   if (isDeckLoading(side)) {
     console.warn(`⚠️ [LoadingLock] Deck ${side.toUpperCase()} is already loading - cannot load "${song.title}"`);

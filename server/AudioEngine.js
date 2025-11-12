@@ -106,7 +106,11 @@ class AudioDeck extends EventEmitter {
       // Create audio stream from URL using ffmpeg
       this.audioStream = new PassThrough();
       
-      this.ffmpegProcess = ffmpeg(ffmpegUrl)
+      // Quote URL to handle special characters (& ? =) correctly
+      // FFmpeg needs quoted strings for URLs with query parameters
+      const quotedUrl = `"${ffmpegUrl}"`;
+      
+      this.ffmpegProcess = ffmpeg(quotedUrl)
         .format('s16le') // PCM signed 16-bit little-endian
         .audioChannels(2) // Stereo
         .audioFrequency(48000) // 48kHz

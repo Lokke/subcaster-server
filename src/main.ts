@@ -7,9 +7,14 @@ import { loadConfig, getConfigValue as getRuntimeConfigValue } from "../js/confi
 import { updateChecker } from "./update-checker";
 import { initElectronTitlebar } from "./electron-titlebar";
 import * as THREE from 'three';
+import { initializeDiscord, getDiscordClient, type DiscordGatewayClient } from './discordGateway';
 
 // 🚀 WebGPU & Hardware Acceleration
 import { initWebGPU, isWebGPUAvailable, enableHardwareAcceleration } from './webgpu-utils';
+
+// 📊 Logging System - Initialize FIRST!
+import { initLogger } from './logger';
+initLogger(); // Load logging config from environment variables
 
 // 🎵 SERVER-BASED AUDIO SYSTEM
 import { ServerClient, type DeckState } from './serverClient';
@@ -35,6 +40,7 @@ console.log("SubCaster loaded!");
 // ========================================
 let serverClient: ServerClient | null = null;
 let mediaSoupClient: MediaSoupClient | null = null;
+let isInitializingServerAudio = false; // Guard flag to prevent multiple simultaneous initializations
 let microphoneClient: MicrophoneClient | null = null;
 let isServerMode: boolean = false; // Will be set to true if server connection succeeds
 
@@ -272,18 +278,31 @@ function getConfigValue(key: string): string | undefined {
  * Audio playback via MediaSoup WebRTC (replaces browser AudioContext)
  */
 async function initializeServerAudio(): Promise<void> {
-  console.log('🔌 Initializing server audio connection...');
+  // Prevent multiple simultaneous initialization attempts
+  if (isInitializingServerAudio) {
+    console.warn('[WS-CLIENT] ⚠️ Server audio initialization already in progress, skipping...');
+    return;
+  }
+  
+  // Check if already connected (prevent duplicate connections)
+  if (serverClient && serverClient.isConnected()) {
+    console.warn('[WS-CLIENT] ⚠️ Server audio already connected, skipping initialization');
+    return;
+  }
+  
+  isInitializingServerAudio = true;
+  console.log('[WS-CLIENT] 🔌 Initializing server audio connection...');
   
   try {
     // Close existing connections (prevent leaks on page reload)
     if (serverClient) {
-      console.log('🧹 Closing existing command connection...');
+      console.log('[WS-CLIENT] 🧹 Closing existing command connection...');
       await serverClient.disconnect();
       serverClient = null;
     }
     
     if (mediaSoupClient) {
-      console.log('🧹 Closing existing MediaSoup connection...');
+      console.log('[WS-CLIENT] 🧹 Closing existing MediaSoup connection...');
       mediaSoupClient.disconnect();
       mediaSoupClient = null;
     }
@@ -293,7 +312,7 @@ async function initializeServerAudio(): Promise<void> {
     
     // Setup event handlers
     serverClient.onConnected = () => {
-      console.log('✅ Connected to server command engine');
+      console.log('[WS-CLIENT] ✅ Connected to server command engine');
       isServerMode = true;
       
       // Control is now automatically requested in ServerClient after welcome message
@@ -301,39 +320,15 @@ async function initializeServerAudio(): Promise<void> {
       // Update UI to show server mode
       updateServerConnectionStatus(true);
       
-      // Connect MediaSoup for audio (WebRTC) - non-blocking
-      console.log('🎧 Connecting to MediaSoup WebRTC audio...');
-      mediaSoupClient = new MediaSoupClient('ws://localhost:3002/ws/mediasoup');
-      
-      // Setup MediaSoup callbacks for conference UI
-      mediaSoupClient.onParticipantJoined = (participantId: string, isMusic: boolean) => {
-        updateConferenceParticipants();
-      };
-      
-      mediaSoupClient.onParticipantLeft = (participantId: string) => {
-        updateConferenceParticipants();
-      };
-      
-      mediaSoupClient.onAudioLevel = (participantId: string, level: number) => {
-        updateParticipantAudioLevel(participantId, level);
-      };
-      
-      // Connect asynchronously without blocking
-      mediaSoupClient.connect()
-        .then(() => {
-          console.log('✅ Connected to MediaSoup WebRTC audio');
-          updateConferenceStatus(true);
-        })
-        .catch((err) => {
-          console.error('❌ MediaSoup connection failed:', err);
-          updateConferenceStatus(false);
-        });
+      // Show Join Conference button instead of auto-joining
+      showConferenceJoinButton();
     };
-    
+
     serverClient.onDisconnected = () => {
-      console.warn('📴 Disconnected from server');
+      console.warn('[WS-CLIENT] 📴 Disconnected from server');
       isServerMode = false;
       updateServerConnectionStatus(false);
+      updateDJControlStatus(false); // Clear DJ control status on disconnect
       
       // Disconnect MediaSoup
       if (mediaSoupClient) {
@@ -345,16 +340,9 @@ async function initializeServerAudio(): Promise<void> {
       updateConferenceStatus(false);
       updateConferenceParticipants();
       
-      // Try to reconnect after 5 seconds
-      setTimeout(() => {
-        console.log('🔄 Attempting to reconnect to server...');
-        initializeServerAudio().catch(err => {
-          console.error('❌ Reconnect failed:', err);
-        });
-      }, 5000);
-    };
-    
-    serverClient.onStateChange = (state: DeckState) => {
+      // ServerClient handles reconnection automatically via scheduleReconnect()
+      // No need to call initializeServerAudio() again here
+    };    serverClient.onStateChange = (state: DeckState) => {
       console.log('🎵 Server deck state changed:', state);
       updateDeckUIFromServer(state);
     };
@@ -365,12 +353,12 @@ async function initializeServerAudio(): Promise<void> {
     
     serverClient.onControlGranted = () => {
       console.log('🎛️ DJ control granted');
-      showNotification('DJ Control erhalten', 'success');
+      updateDJControlStatus(true);
     };
     
     serverClient.onControlDenied = () => {
       console.warn('🎛️ DJ control denied');
-      showNotification('DJ Control verweigert - ein anderer DJ ist aktiv', 'warning');
+      updateStatusDisplay('DJ Control verweigert - anderer DJ aktiv', 'warning');
     };
     
     serverClient.onError = (error: string) => {
@@ -405,11 +393,13 @@ async function initializeServerAudio(): Promise<void> {
     
     // Connect to server
     await serverClient.connect();
-    console.log('✅ Server audio initialized');
+    console.log('[WS-CLIENT] ✅ Server audio initialized');
+    isInitializingServerAudio = false; // Reset flag after successful initialization
     
   } catch (error) {
-    console.error('❌ Failed to initialize server audio:', error);
+    console.error('[WS-CLIENT] ❌ Failed to initialize server audio:', error);
     isServerMode = false;
+    isInitializingServerAudio = false; // Reset flag on error
     throw error;
   }
 }
@@ -429,22 +419,27 @@ function updateDeckUIFromServer(state: DeckState): void {
     // Clear track info
     const titleElement = document.getElementById(`track-title-${side}`);
     const artistElement = document.getElementById(`track-artist-${side}`);
-    const durationElement = document.getElementById(`duration-${side}`);
-    const currentTimeElement = document.getElementById(`current-time-${side}`);
+    const timeDisplay = document.getElementById(`time-display-${side}`);
     
-    if (titleElement) titleElement.textContent = '';
+    if (titleElement) titleElement.textContent = 'No Track Loaded';
     if (artistElement) artistElement.textContent = '';
-    if (durationElement) durationElement.textContent = '0:00';
-    if (currentTimeElement) currentTimeElement.textContent = '0:00';
+    if (timeDisplay) timeDisplay.textContent = '0:00 / 0:00';
     
     // Clear waveforms
     clearWaveform(side);
     
     // Reset play/pause button
-    const playPauseBtn = document.querySelector(`.player[data-player="${side}"] .play-pause-btn`);
+    const playPauseBtn = document.getElementById(`play-pause-${side}`) as HTMLButtonElement;
     if (playPauseBtn) {
       const icon = playPauseBtn.querySelector('.material-icons');
       if (icon) icon.textContent = 'play_arrow';
+      playPauseBtn.classList.remove('playing');
+    }
+    
+    // Clear player deck visual state
+    const playerDeck = document.getElementById(`player-${side}`);
+    if (playerDeck) {
+      playerDeck.classList.remove('playing', 'loaded', 'has-track');
     }
     
     // Clear local song reference
@@ -468,50 +463,98 @@ function updateDeckUIFromServer(state: DeckState): void {
     if (titleElement) titleElement.textContent = state.track.title;
     if (artistElement) artistElement.textContent = state.track.artist;
     
-    // Update waveform info
-    const waveformContainer = document.getElementById(`waveform-container-${side}`);
-    if (waveformContainer) {
-      const waveformInfo = waveformContainer.querySelector('.waveform-track-info');
-      if (waveformInfo) {
-        const titleEl = waveformInfo.querySelector('.track-title');
-        const artistEl = waveformInfo.querySelector('.track-artist');
-        const albumEl = waveformInfo.querySelector('.track-album');
-        
-        if (titleEl) titleEl.textContent = state.track.title;
-        if (artistEl) artistEl.textContent = state.track.artist;
-        if (albumEl) albumEl.textContent = state.track.album || '';
+    // Update album cover
+    if (state.track.coverArt && openSubsonicClient) {
+      const albumCover = document.getElementById(`album-cover-${side}`);
+      if (albumCover) {
+        const coverUrl = openSubsonicClient.getCoverArtUrl(state.track.coverArt, 300);
+        albumCover.innerHTML = `<img src="${coverUrl}" alt="Album Cover" />`;
       }
     }
     
-    // Update duration display
+    // Update waveform info overlay
+    const waveformInfo = document.getElementById(`waveform-info-${side}`);
+    if (waveformInfo) {
+      const titleEl = waveformInfo.querySelector('.track-title');
+      const artistEl = waveformInfo.querySelector('.track-artist');
+      const albumEl = waveformInfo.querySelector('.track-album');
+      
+      if (titleEl) titleEl.textContent = state.track.title;
+      if (artistEl) artistEl.textContent = state.track.artist;
+      if (albumEl) albumEl.textContent = state.track.album || '';
+    }
+    
+    // Update time display with duration
     if (state.track.duration > 0) {
-      const durationElement = document.getElementById(`duration-${side}`);
-      if (durationElement) {
-        durationElement.textContent = formatTime(state.track.duration);
+      const timeDisplay = document.getElementById(`time-display-${side}`);
+      if (timeDisplay) {
+        timeDisplay.textContent = `0:00 / ${formatTime(state.track.duration)}`;
       }
+    }
+    
+    // Store song data locally for drag & drop and UI
+    if (state.track.id) {
+      const song: OpenSubsonicSong = {
+        id: state.track.id,
+        title: state.track.title,
+        artist: state.track.artist,
+        album: state.track.album || '',
+        duration: state.track.duration || 0,
+        coverArt: state.track.coverArt || '',
+        size: 0,
+        suffix: 'mp3',
+        bitRate: 320,
+        year: 0,
+        genre: '',
+        playCount: 0
+      };
+      deckSongs[side] = song;
     }
     
     // Load waveform if track changed and we have OpenSubsonic client
-    if (state.state === 'ready' && openSubsonicClient) {
-      // Check if waveform already loaded for this track
-      const existingWaveform = waveformsZoom[side];
-      const needsWaveform = !existingWaveform || !existingWaveform.isReady();
-      
-      if (needsWaveform && state.track && state.track.title) {
-        console.log(`🌊 Loading waveform for deck ${side.toUpperCase()}: ${state.track.title}`);
-        loadWaveformForDeck(side, state.track).catch(err => {
-          console.error(`❌ Failed to load waveform for deck ${side}:`, err);
-        });
-      }
+    if (state.state === 'ready' && openSubsonicClient && state.track.id) {
+      console.log(`🌊 Loading waveform for deck ${side.toUpperCase()}: ${state.track.title}`);
+      loadWaveformForDeck(side, state.track).catch(err => {
+        console.error(`❌ Failed to load waveform for deck ${side}:`, err);
+      });
     }
   }
   
   // Update play/pause button
-  const playPauseBtn = document.querySelector(`.player[data-player="${side}"] .play-pause-btn`);
+  const playPauseBtn = document.getElementById(`play-pause-${side}`) as HTMLButtonElement;
   if (playPauseBtn) {
     const icon = playPauseBtn.querySelector('.material-icons');
     if (icon) {
       icon.textContent = state.state === 'playing' ? 'pause' : 'play_arrow';
+    }
+    
+    // Update button state class
+    if (state.state === 'playing') {
+      playPauseBtn.classList.add('playing');
+    } else {
+      playPauseBtn.classList.remove('playing');
+    }
+  }
+  
+  // Update player deck visual state
+  const playerDeck = document.getElementById(`player-${side}`);
+  if (playerDeck) {
+    if (state.state === 'playing') {
+      playerDeck.classList.add('playing');
+    } else {
+      playerDeck.classList.remove('playing');
+    }
+  }
+  
+  // Update volume slider (sync from server)
+  if (state.volume !== undefined) {
+    const volumeSlider = document.getElementById(`volume-${side}`) as HTMLInputElement;
+    if (volumeSlider) {
+      const volumePercent = Math.round(state.volume * 100);
+      if (volumeSlider.value !== String(volumePercent)) {
+        volumeSlider.value = String(volumePercent);
+        console.log(`🔊 Synced volume slider for deck ${side.toUpperCase()}: ${volumePercent}%`);
+      }
     }
   }
   
@@ -568,27 +611,44 @@ async function loadWaveformForDeck(side: 'a' | 'b' | 'c' | 'd', track: any): Pro
  */
 function updateDeckPosition(side: 'a' | 'b' | 'c' | 'd', position: number): void {
   // Update time display
-  const currentTimeElement = document.getElementById(`current-time-${side}`);
-  if (currentTimeElement) {
-    currentTimeElement.textContent = formatTime(position);
-  }
-  
-  // Update progress bar
-  const audio = getAudioElement(side);
-  if (audio && audio.duration > 0) {
-    const progressBar = document.getElementById(`progress-${side}`) as HTMLInputElement;
-    if (progressBar) {
-      const percent = (position / audio.duration) * 100;
-      progressBar.value = String(percent);
+  const timeDisplay = document.getElementById(`time-display-${side}`);
+  if (timeDisplay) {
+    // Get duration from stored track or audio element
+    const track = deckSongs[side];
+    const duration = track?.duration || 0;
+    
+    if (duration > 0) {
+      timeDisplay.textContent = `${formatTime(position)} / ${formatTime(duration)}`;
+    } else {
+      timeDisplay.textContent = `${formatTime(position)} / 0:00`;
     }
   }
   
-  // Update waveform progress
-  const waveformContainer = document.getElementById(`waveform-container-${side}`);
-  if (waveformContainer) {
-    const customWaveform = (waveformContainer as any).__customWaveform;
-    if (customWaveform && audio && audio.duration > 0) {
-      customWaveform.setProgress(position / audio.duration);
+  // Update waveform progress (both zoom and overview)
+  const waveformZoom = waveformsZoom[side];
+  const waveformOverview = waveformsOverview[side];
+  const track = deckSongs[side];
+  const duration = track?.duration || 0;
+  
+  if (duration > 0) {
+    const progress = position / duration;
+    
+    // Update zoom waveform cursor position
+    if (waveformZoom) {
+      try {
+        waveformZoom.seekTo(progress);
+      } catch (error) {
+        console.warn(`Failed to update zoom waveform position for deck ${side}:`, error);
+      }
+    }
+    
+    // Update overview waveform cursor position
+    if (waveformOverview) {
+      try {
+        waveformOverview.seekTo(progress);
+      } catch (error) {
+        console.warn(`Failed to update overview waveform position for deck ${side}:`, error);
+      }
     }
   }
 }
@@ -731,47 +791,147 @@ function syncQueueFromServer(serverQueue: any[]): void {
  * Update server connection status in UI
  */
 function updateServerConnectionStatus(connected: boolean): void {
-  // Create or update status indicator
-  let statusIndicator = document.getElementById('server-status-indicator');
+  const statusContainer = getStatusContainer();
   
-  if (!statusIndicator) {
-    statusIndicator = document.createElement('div');
-    statusIndicator.id = 'server-status-indicator';
-    statusIndicator.style.cssText = `
-      position: fixed;
-      top: 10px;
-      right: 10px;
-      padding: 8px 12px;
-      border-radius: 4px;
-      font-size: 12px;
-      z-index: 10000;
-      display: flex;
-      align-items: center;
-      gap: 6px;
+  let serverBadge = document.getElementById('server-status-badge');
+  
+  if (!serverBadge) {
+    serverBadge = document.createElement('div');
+    serverBadge.id = 'server-status-badge';
+    serverBadge.className = 'status-badge status-persistent';
+    serverBadge.style.cssText = `
+      font-family: 'Courier New', monospace;
+      font-size: 7px;
+      font-weight: 600;
+      letter-spacing: 0.3px;
+      text-transform: uppercase;
+      padding: 0.15rem 0.4rem;
+      border-radius: 2px;
+      border: 1px solid;
+      cursor: default;
+      user-select: none;
+      white-space: nowrap;
     `;
-    document.body.appendChild(statusIndicator);
+    statusContainer.appendChild(serverBadge);
   }
   
   if (connected) {
-    statusIndicator.style.backgroundColor = '#43b581';
-    statusIndicator.style.color = 'white';
-    statusIndicator.innerHTML = `
-      <span class="material-icons" style="font-size: 16px;">cloud_done</span>
-      Server verbunden
-    `;
+    serverBadge.style.color = '#44ff44';
+    serverBadge.style.background = 'rgba(0, 102, 0, 0.3)';
+    serverBadge.style.borderColor = '#006600';
+    serverBadge.innerHTML = '<span style="opacity: 0.5; margin-right: 4px;">☁️</span>CONNECTED';
   } else {
-    statusIndicator.style.backgroundColor = '#f04747';
-    statusIndicator.style.color = 'white';
-    statusIndicator.innerHTML = `
-      <span class="material-icons" style="font-size: 16px;">cloud_off</span>
-      Server getrennt
-    `;
+    serverBadge.style.color = '#ff4444';
+    serverBadge.style.background = 'rgba(102, 0, 0, 0.3)';
+    serverBadge.style.borderColor = '#660000';
+    serverBadge.innerHTML = '<span style="opacity: 0.5; margin-right: 4px;">☁️</span>DISCONNECTED';
+  }
+  
+  // Remove old status indicator if it exists
+  const oldIndicator = document.getElementById('server-status-indicator');
+  if (oldIndicator) {
+    oldIndicator.remove();
   }
 }
 
 // ========================================
 // 🎤 CONFERENCE UI MANAGEMENT
 // ========================================
+
+/**
+ * Show Conference Join Button
+ */
+function showConferenceJoinButton(): void {
+  const joinWrapper = document.getElementById('conference-join-wrapper');
+  const participantsContainer = document.getElementById('conference-participants');
+  
+  if (joinWrapper) {
+    joinWrapper.style.display = 'flex';
+  }
+  
+  if (participantsContainer) {
+    participantsContainer.style.display = 'none';
+  }
+  
+  updateConferenceStatus(false);
+}
+
+/**
+ * Join Conference (Manual User Action)
+ */
+async function joinConference(): Promise<void> {
+  console.log('[WEBRTC-CLIENT] 🎧 User initiated conference join...');
+  
+  // Hide join button, show participants
+  const joinWrapper = document.getElementById('conference-join-wrapper');
+  const participantsContainer = document.getElementById('conference-participants');
+  const micBtn = document.getElementById('conference-mic-btn');
+  
+  if (joinWrapper) {
+    joinWrapper.style.display = 'none';
+  }
+  
+  if (participantsContainer) {
+    participantsContainer.style.display = 'flex';
+  }
+  
+  // Only create new MediaSoup client if not already connected
+  if (!mediaSoupClient) {
+    console.log('[WEBRTC-CLIENT] 🎧 Connecting to MediaSoup WebRTC audio...');
+    mediaSoupClient = new MediaSoupClient('ws://localhost:3002/ws/mediasoup');
+    
+    // Setup MediaSoup callbacks for conference UI
+    mediaSoupClient.onParticipantJoined = (participantId: string, isMusic: boolean) => {
+      updateConferenceParticipants();
+    };
+    
+    mediaSoupClient.onParticipantLeft = (participantId: string) => {
+      updateConferenceParticipants();
+    };
+    
+    mediaSoupClient.onAudioLevel = (participantId: string, level: number) => {
+      updateParticipantAudioLevel(participantId, level);
+    };
+    
+    // Connect asynchronously without blocking
+    try {
+      await mediaSoupClient.connect();
+      console.log('[WEBRTC-CLIENT] ✅ Connected to MediaSoup WebRTC audio');
+      updateConferenceStatus(true);
+      
+      // Show microphone button after successful connection
+      if (micBtn) {
+        micBtn.style.display = 'flex';
+      }
+      
+      // Enable microphone automatically
+      try {
+        console.log('[WEBRTC-CLIENT] 🎤 Enabling microphone...');
+        await mediaSoupClient.enableMicrophone();
+        console.log('[WEBRTC-CLIENT] ✅ Microphone enabled');
+        updateMicrophoneButton(true);
+      } catch (micErr) {
+        console.error('[WEBRTC-CLIENT] ❌ Failed to enable microphone:', micErr);
+        // User can still participate without mic (receive only)
+        updateMicrophoneButton(false);
+      }
+      
+    } catch (err) {
+      console.error('[WEBRTC-CLIENT] ❌ MediaSoup connection failed:', err);
+      updateConferenceStatus(false);
+      // Show join button again on error
+      if (joinWrapper) joinWrapper.style.display = 'flex';
+      if (participantsContainer) participantsContainer.style.display = 'none';
+      if (micBtn) micBtn.style.display = 'none';
+    }
+  } else {
+    console.log('[WEBRTC-CLIENT] ⚠️ MediaSoup client already exists');
+    updateConferenceStatus(true);
+    if (micBtn) {
+      micBtn.style.display = 'flex';
+    }
+  }
+}
 
 /**
  * Update conference connection status
@@ -793,17 +953,36 @@ function updateConferenceStatus(connected: boolean): void {
  * Update conference participants list
  */
 function updateConferenceParticipants(): void {
+  console.log('[WEBRTC-CLIENT] 🔄 Updating participants list...');
+  
   const participantsContainer = document.getElementById('conference-participants');
-  if (!participantsContainer || !mediaSoupClient) return;
+  if (!participantsContainer || !mediaSoupClient) {
+    console.log('[WEBRTC-CLIENT] ⚠️ Missing container or client:', { 
+      hasContainer: !!participantsContainer, 
+      hasClient: !!mediaSoupClient 
+    });
+    return;
+  }
   
   // Get all participants from MediaSoupClient using public method
   const streams = mediaSoupClient.getStreams();
+  console.log('[WEBRTC-CLIENT] 📊 Active streams:', {
+    count: streams.size,
+    streamIds: Array.from(streams.keys()),
+    streamDetails: Array.from(streams.entries()).map(([id, info]) => ({
+      id,
+      label: info.label,
+      hasAudio: !!info.audioElement,
+      hasGain: !!info.gainNode
+    }))
+  });
   
   // Clear container
   participantsContainer.innerHTML = '';
   
   // Check if empty
   if (streams.size === 0) {
+    console.log('[WEBRTC-CLIENT] ⚠️ No streams available, showing empty state');
     participantsContainer.innerHTML = `
       <div class="conference-empty">
         <span class="material-icons">person_off</span>
@@ -813,9 +992,18 @@ function updateConferenceParticipants(): void {
     return;
   }
   
+  console.log('[WEBRTC-CLIENT] ✅ Rendering', streams.size, 'participants');
+  
   // Add each participant
   streams.forEach((streamInfo, streamId) => {
     const isMusicStream = streamId === 'music';
+    const isCurrentUser = streamId === 'self'; // TODO: Implement self-detection
+    
+    console.log('[WEBRTC-CLIENT] 👤 Adding participant:', { 
+      streamId, 
+      label: streamInfo.label, 
+      isMusic: isMusicStream 
+    });
     
     const participantEl = document.createElement('div');
     participantEl.className = 'conference-participant';
@@ -823,10 +1011,13 @@ function updateConferenceParticipants(): void {
     
     // Use different icon for server music vs users
     const icon = isMusicStream ? 'music_note' : 'person';
+    const displayName = streamInfo.label || 'Unknown';
+    const nameTag = isCurrentUser ? `${displayName} (You)` : displayName;
     
     participantEl.innerHTML = `
       <span class="material-icons participant-icon">${icon}</span>
-      <span class="participant-name">${streamInfo.label || 'Unknown'}</span>
+      <span class="participant-name">${nameTag}</span>
+      <span class="material-icons participant-status">mic</span>
       <div class="participant-meter">
         <div class="participant-meter-fill"></div>
       </div>
@@ -834,6 +1025,60 @@ function updateConferenceParticipants(): void {
     
     participantsContainer.appendChild(participantEl);
   });
+  
+  console.log('[WEBRTC-CLIENT] ✅ Participants rendered successfully');
+}
+
+/**
+ * Update microphone button state
+ */
+function updateMicrophoneButton(active: boolean): void {
+  const micBtn = document.getElementById('conference-mic-btn');
+  if (!micBtn) return;
+  
+  micBtn.setAttribute('data-active', active.toString());
+  
+  const iconSpan = micBtn.querySelector('.material-icons');
+  const textSpan = micBtn.querySelector('span:not(.material-icons)');
+  
+  if (iconSpan) {
+    iconSpan.textContent = active ? 'mic' : 'mic_off';
+  }
+  
+  if (textSpan) {
+    textSpan.textContent = active ? 'Microphone On' : 'Microphone Off';
+  }
+}
+
+/**
+ * Toggle microphone on/off
+ */
+async function toggleMicrophone(): Promise<void> {
+  if (!mediaSoupClient) {
+    console.warn('[WEBRTC-CLIENT] ⚠️ Cannot toggle microphone: not connected');
+    return;
+  }
+  
+  const micBtn = document.getElementById('conference-mic-btn');
+  const isActive = micBtn?.getAttribute('data-active') === 'true';
+  
+  try {
+    if (isActive) {
+      console.log('[WEBRTC-CLIENT] 🎤 Disabling microphone...');
+      mediaSoupClient.disableMicrophone();
+      updateMicrophoneButton(false);
+      console.log('[WEBRTC-CLIENT] ✅ Microphone disabled');
+    } else {
+      console.log('[WEBRTC-CLIENT] 🎤 Enabling microphone...');
+      await mediaSoupClient.enableMicrophone();
+      updateMicrophoneButton(true);
+      console.log('[WEBRTC-CLIENT] ✅ Microphone enabled');
+    }
+  } catch (err) {
+    console.error('[WEBRTC-CLIENT] ❌ Failed to toggle microphone:', err);
+    // Reset button state on error
+    updateMicrophoneButton(false);
+  }
 }
 
 /**
@@ -876,34 +1121,117 @@ function updateParticipantAudioLevel(participantId: string, level: number): void
  * Show notification toast
  */
 function showNotification(message: string, type: 'success' | 'warning' | 'error' = 'success'): void {
-  const toast = document.createElement('div');
-  toast.style.cssText = `
-    position: fixed;
-    bottom: 20px;
-    right: 20px;
-    padding: 12px 20px;
-    border-radius: 4px;
-    color: white;
-    font-size: 14px;
-    z-index: 10001;
-    animation: slideIn 0.3s ease;
-  `;
+  // Redirect to status display instead of toast
+  updateStatusDisplay(message, type);
+}
+
+/**
+ * Get or create status badge container
+ */
+function getStatusContainer(): HTMLElement {
+  let statusContainer = document.getElementById('status-badge-container');
+  
+  if (!statusContainer) {
+    statusContainer = document.createElement('div');
+    statusContainer.id = 'status-badge-container';
+    statusContainer.style.cssText = `
+      position: fixed;
+      bottom: 14px;
+      right: 8px;
+      z-index: 1000;
+      display: flex;
+      flex-direction: row-reverse;
+      gap: 4px;
+      align-items: center;
+    `;
+    document.body.appendChild(statusContainer);
+  }
+  
+  return statusContainer;
+}
+
+/**
+ * Update status display next to version (temporary messages)
+ */
+function updateStatusDisplay(message: string, type: 'success' | 'warning' | 'error', persistent: boolean = false): void {
+  const statusContainer = getStatusContainer();
+  
+  // Create temporary status badge
+  const statusBadge = document.createElement('div');
+  statusBadge.className = 'status-badge status-temporary';
   
   const colors = {
-    success: '#43b581',
-    warning: '#faa61a',
-    error: '#f04747'
+    success: { bg: 'rgba(0, 102, 0, 0.3)', color: '#44ff44', border: '#006600' },
+    warning: { bg: 'rgba(102, 102, 0, 0.3)', color: '#ffff44', border: '#666600' },
+    error: { bg: 'rgba(102, 0, 0, 0.3)', color: '#ff4444', border: '#660000' }
   };
   
-  toast.style.backgroundColor = colors[type];
-  toast.textContent = message;
+  const style = colors[type];
+  statusBadge.style.cssText = `
+    font-family: 'Courier New', monospace;
+    font-size: 7px;
+    font-weight: 600;
+    letter-spacing: 0.3px;
+    text-transform: uppercase;
+    color: ${style.color};
+    background: ${style.bg};
+    padding: 0.15rem 0.4rem;
+    border-radius: 2px;
+    border: 1px solid ${style.border};
+    cursor: default;
+    user-select: none;
+    white-space: nowrap;
+  `;
+  statusBadge.textContent = message;
   
-  document.body.appendChild(toast);
+  statusContainer.appendChild(statusBadge);
   
-  setTimeout(() => {
-    toast.style.animation = 'slideOut 0.3s ease';
-    setTimeout(() => toast.remove(), 300);
-  }, 3000);
+  // Auto-hide after 3 seconds unless persistent
+  if (!persistent) {
+    setTimeout(() => {
+      statusBadge.style.opacity = '0';
+      setTimeout(() => statusBadge.remove(), 300);
+    }, 3000);
+  }
+}
+
+/**
+ * Update DJ control status (persistent badge)
+ */
+function updateDJControlStatus(hasControl: boolean): void {
+  const statusContainer = getStatusContainer();
+  
+  let djBadge = document.getElementById('dj-control-badge');
+  
+  if (hasControl) {
+    if (!djBadge) {
+      djBadge = document.createElement('div');
+      djBadge.id = 'dj-control-badge';
+      djBadge.className = 'status-badge status-persistent';
+      djBadge.style.cssText = `
+        font-family: 'Courier New', monospace;
+        font-size: 7px;
+        font-weight: 600;
+        letter-spacing: 0.3px;
+        text-transform: uppercase;
+        color: #44ff44;
+        background: rgba(0, 102, 0, 0.3);
+        padding: 0.15rem 0.4rem;
+        border-radius: 2px;
+        border: 1px solid #006600;
+        cursor: default;
+        user-select: none;
+        white-space: nowrap;
+      `;
+      djBadge.innerHTML = '<span style="opacity: 0.5; margin-right: 4px;">🎛️</span>DJ CONTROL';
+      statusContainer.insertBefore(djBadge, statusContainer.firstChild);
+    }
+    djBadge.style.display = 'block';
+  } else {
+    if (djBadge) {
+      djBadge.remove();
+    }
+  }
 }
 
 // Blacklisted Genres für Live-Streaming
@@ -911,15 +1239,12 @@ let blacklistedGenres: string[] = [];
 
 function loadBlacklistedGenres() {
   const genresConfig = getConfigValue('VITE_BLACKLISTED_GENRES') || '';
-  console.log('🔍 Loading blacklisted genres from config:', genresConfig);
+  // Debug logging disabled - enable with VITE_LOG_LEVEL=DEBUG
   
   blacklistedGenres = genresConfig
     .split(',')
     .map(g => g.trim().toLowerCase())
     .filter(g => g.length > 0);
-  
-  console.log('🚫 Blacklisted genres for streaming:', blacklistedGenres);
-  console.log('🚫 Total blacklisted genres count:', blacklistedGenres.length);
 }
 
 // Prüfe ob Song ein blacklisted Genre hat
@@ -930,13 +1255,6 @@ function hasBlacklistedGenre(song: OpenSubsonicSong): boolean {
   
   // Genre kann multi-valued sein (komma-separiert)
   const songGenres = song.genre.toLowerCase().split(/[,;/]/).map(g => g.trim());
-  
-  console.log('🔍 Checking blacklist:', {
-    songTitle: song.title,
-    songGenre: song.genre,
-    songGenresArray: songGenres,
-    blacklistedGenres: blacklistedGenres
-  });
   
   // Prüfe ob eines der Song-Genres auf der Blacklist ist
   const isBlacklisted = songGenres.some(genre => 
@@ -4082,27 +4400,42 @@ async function displayCurrentVersion() {
     const response = await fetch('/api/version');
     if (response.ok) {
       const data = await response.json();
-      const versionDisplay = document.getElementById('version-display');
-      if (versionDisplay) {
-        const versionText = versionDisplay.querySelector('.version-text');
-        if (versionText) {
-          // Show short Git SHA (first 7 chars)
-          const shortSha = data.gitCommit?.substring(0, 7) || 'dev';
-          versionText.textContent = shortSha;
-          versionDisplay.title = `Version: ${data.version}\nCommit: ${data.gitCommit}\nBuild: ${data.buildDate}`;
-          console.log('📌 Version displayed:', shortSha);
-        }
+      
+      // Create version badge in status container
+      const statusContainer = getStatusContainer();
+      
+      let versionBadge = document.getElementById('version-badge');
+      
+      if (!versionBadge) {
+        versionBadge = document.createElement('div');
+        versionBadge.id = 'version-badge';
+        versionBadge.className = 'status-badge status-persistent';
+        versionBadge.style.cssText = `
+          font-family: 'Courier New', monospace;
+          font-size: 7px;
+          font-weight: 600;
+          letter-spacing: 0.3px;
+          text-transform: uppercase;
+          color: #44ff44;
+          background: rgba(0, 102, 0, 0.3);
+          padding: 0.15rem 0.4rem;
+          border-radius: 2px;
+          border: 1px solid #006600;
+          cursor: default;
+          user-select: none;
+          white-space: nowrap;
+        `;
+        statusContainer.appendChild(versionBadge);
       }
+      
+      // Show short Git SHA (first 7 chars)
+      const shortSha = data.gitCommit?.substring(0, 7) || 'dev';
+      versionBadge.innerHTML = `<span style="opacity: 0.5; margin-right: 4px;">v</span>${shortSha}`;
+      versionBadge.title = `Version: ${data.version}\nCommit: ${data.gitCommit}\nBuild: ${data.buildDate}`;
+      console.log('📌 Version displayed:', shortSha);
     }
   } catch (error) {
     console.error('❌ Failed to fetch version:', error);
-    const versionDisplay = document.getElementById('version-display');
-    if (versionDisplay) {
-      const versionText = versionDisplay.querySelector('.version-text');
-      if (versionText) {
-        versionText.textContent = 'dev';
-      }
-    }
   }
 }
 
@@ -4204,6 +4537,26 @@ document.addEventListener("DOMContentLoaded", async () => {
   
   // Initialize Electron titlebar if running in Electron
   initElectronTitlebar();
+  
+  // Setup Conference Join Button
+  const conferenceJoinBtn = document.getElementById('conference-join-btn');
+  if (conferenceJoinBtn) {
+    conferenceJoinBtn.addEventListener('click', () => {
+      joinConference().catch(err => {
+        console.error('[WS-CLIENT] ❌ Failed to join conference:', err);
+      });
+    });
+  }
+  
+  // Setup Conference Microphone Toggle Button
+  const conferenceMicBtn = document.getElementById('conference-mic-btn');
+  if (conferenceMicBtn) {
+    conferenceMicBtn.addEventListener('click', () => {
+      toggleMicrophone().catch(err => {
+        console.error('[WS-CLIENT] ❌ Failed to toggle microphone:', err);
+      });
+    });
+  }
   
   // Check configuration and initialize accordingly
   await checkConfigurationAndInitialize();
@@ -10271,9 +10624,11 @@ function initializeOpenSubsonicLogin() {
                 password: '' // Not needed, we have token+salt from server
               });
               
-              // Set pre-generated token and salt from server
-              (openSubsonicClient as any).token = authData.token;
-              (openSubsonicClient as any).salt = authData.salt;
+              // Set pre-generated token and salt from server (as auth object)
+              (openSubsonicClient as any).auth = {
+                token: authData.token,
+                salt: authData.salt
+              };
           
           const authenticated = await openSubsonicClient.authenticate();
           
@@ -10880,6 +11235,27 @@ function setupAudioPlayer(side: 'a' | 'b' | 'c' | 'd', audio: HTMLAudioElement) 
   ejectBtn?.addEventListener('click', async () => {
     console.log(`⏏️ Player ${side.toUpperCase()} manual eject button pressed`);
     
+    // ========================================
+    // 🔌 SERVER MODE: Send clear command to server
+    // ========================================
+    if (isServerMode && serverClient) {
+      const ejectedSong = getCurrentLoadedSong(side);
+      
+      console.log(`🔌 SERVER MODE: Clearing deck ${side.toUpperCase()}`);
+      serverClient.clear(side);
+      
+      // Move to end of queue if needed (local only, server doesn't manage queue)
+      if (ejectedSong) {
+        moveQueueItemToEnd(ejectedSong, true);
+        console.log(`🔄 Moved ejected song "${ejectedSong.title}" to end of queue`);
+      }
+      
+      return;
+    }
+    
+    // ========================================
+    // 💻 LOCAL MODE: Original implementation
+    // ========================================
     // Manual eject: Move song to end of queue instead of removing it
     const ejectedSong = getCurrentLoadedSong(side);
     if (ejectedSong) {
@@ -10900,15 +11276,29 @@ function setupAudioPlayer(side: 'a' | 'b' | 'c' | 'd', audio: HTMLAudioElement) 
       playerDeck.classList.remove('playing');
     }
     
-    console.log(`?? Player ${side.toUpperCase()} ejected`);
+    console.log(`⏏️ Player ${side.toUpperCase()} ejected`);
     
     // Immediately check if we need to fill this deck from queue
     setTimeout(() => {
       checkAndFillEmptyDecks();
     }, 100);
   });
+  
+  // Note: Removed incomplete/duplicate restartBtn listener that was never properly closed
 
   restartBtn?.addEventListener('click', () => {
+    // ========================================
+    // 🔌 SERVER MODE: Send seek(0) command to server
+    // ========================================
+    if (isServerMode && serverClient) {
+      console.log(`🔄 SERVER MODE: Restarting deck ${side.toUpperCase()}`);
+      serverClient.seek(side, 0);
+      return;
+    }
+    
+    // ========================================
+    // 💻 LOCAL MODE: Original implementation
+    // ========================================
     if (audio.src) {
       audio.currentTime = 0;
       
@@ -10944,6 +11334,18 @@ function setupAudioPlayer(side: 'a' | 'b' | 'c' | 'd', audio: HTMLAudioElement) 
   volumeSlider?.addEventListener('input', () => {
     const volume = parseInt(volumeSlider.value) / 100;
     
+    // ========================================
+    // 🔌 SERVER MODE: Send volume command to server
+    // ========================================
+    if (isServerMode && serverClient) {
+      console.log(`🔊 SERVER MODE: Setting deck ${side.toUpperCase()} volume to ${Math.round(volume * 100)}%`);
+      serverClient.setVolume(side, volume);
+      return;
+    }
+    
+    // ========================================
+    // 💻 LOCAL MODE: Original implementation
+    // ========================================
     // Use Deck API instead of direct gain manipulation
     const deck = getDeck(side);
     if (deck) {
@@ -10954,17 +11356,39 @@ function setupAudioPlayer(side: 'a' | 'b' | 'c' | 'd', audio: HTMLAudioElement) 
     }
   });
   
-  // Progress Bar Click Seeking
-  progressContainer?.addEventListener('click', (e) => {
-    if (audio.duration) {
-      const rect = progressContainer.getBoundingClientRect();
-      const clickX = e.clientX - rect.left;
-      const width = rect.width;
-      const seekTime = (clickX / width) * audio.duration;
-      audio.currentTime = seekTime;
-      console.log(`Player ${side} seek to: ${seekTime}s`);
-    }
-  });
+  // Progress Bar Click Seeking (Waveform Overview)
+  // Note: Overview waveform handles its own seeking via interact:true
+  // But we need to intercept for Server Mode
+  const waveformOverviewElement = document.getElementById(`waveform-${side}-overview`);
+  if (waveformOverviewElement) {
+    waveformOverviewElement.addEventListener('click', (e) => {
+      // ========================================
+      // 🔌 SERVER MODE: Send seek command to server
+      // ========================================
+      if (isServerMode && serverClient) {
+        const track = deckSongs[side];
+        if (!track || !track.duration) {
+          console.warn(`⚠️ Cannot seek: no track loaded or no duration`);
+          return;
+        }
+        
+        const rect = waveformOverviewElement.getBoundingClientRect();
+        const clickX = e.clientX - rect.left;
+        const width = rect.width;
+        const seekTime = (clickX / width) * track.duration;
+        
+        console.log(`🎯 SERVER MODE: Seeking deck ${side.toUpperCase()} to ${seekTime.toFixed(1)}s`);
+        serverClient.seek(side, seekTime);
+        
+        // Prevent waveform from handling this (server will update position)
+        e.stopPropagation();
+        e.preventDefault();
+        return;
+      }
+      
+      // 💻 LOCAL MODE: Waveform handles seeking automatically via interact:true
+    });
+  }
   
   // Initial volume setting - sowohl für HTML Audio als auch Web Audio API
   if (volumeSlider) {
@@ -11912,89 +12336,29 @@ function showFileLoadError(deck: 'a' | 'b' | 'c' | 'd', fileName: string): void 
   }, 3000);
 }
 
-// Debug function to test all draggable elements
+// Debug function to test all draggable elements (disabled - enable in .env with VITE_LOG_LEVEL=DEBUG)
 function debugDraggableElements() {
-  console.log('🔍 DEBUGGING DRAGGABLE ELEMENTS:');
-  
-  const draggableElements = document.querySelectorAll('[draggable="true"]');
-  console.log(`🔍 Found ${draggableElements.length} draggable elements:`);
-  
-  draggableElements.forEach((element, index) => {
-    console.log(`🔍 Draggable ${index + 1}:`, element);
-    console.log(`  - Tag: ${element.tagName}`);
-    console.log(`  - Classes: ${element.className}`);
-    console.log(`  - ID: ${element.id}`);
-    console.log(`  - Has dragstart listener:`, element.hasAttribute('ondragstart') || element.addEventListener.length > 0);
-  });
-  
-  // Test drop zones
-  console.log('🔍 DEBUGGING DROP ZONES:');
-  ['a', 'b', 'c', 'd'].forEach(side => {
-    const deck = document.getElementById(`player-${side}`);
-    if (deck) {
-      console.log(`🔍 Drop zone ${side}:`, deck);
-      console.log(`  - Has drag-over class:`, deck.classList.contains('drag-over'));
-      console.log(`  - Style display:`, getComputedStyle(deck).display);
-      console.log(`  - Style visibility:`, getComputedStyle(deck).visibility);
-      console.log(`  - Style pointer-events:`, getComputedStyle(deck).pointerEvents);
-      console.log(`  - Style z-index:`, getComputedStyle(deck).zIndex);
-      console.log(`  - Style position:`, getComputedStyle(deck).position);
-    }
-  });
-  
-  // Check for overlapping elements
-  console.log('🔍 CHECKING FOR OVERLAPPING ELEMENTS:');
-  const overlays = document.querySelectorAll('[style*="position: fixed"], [style*="position: absolute"], .disconnect-timer-overlay, .stream-config-panel');
-  overlays.forEach((overlay, index) => {
-    const computed = getComputedStyle(overlay);
-    console.log(`🔍 Overlay ${index + 1}:`, overlay);
-    console.log(`  - Display:`, computed.display);
-    console.log(`  - Visibility:`, computed.visibility);
-    console.log(`  - Z-index:`, computed.zIndex);
-    console.log(`  - Pointer-events:`, computed.pointerEvents);
-    console.log(`  - Classes:`, overlay.className);
-  });
+  // Logs moved to logger system - currently disabled to reduce console spam
 }
 
-// Global debug function - call this from browser console
+// Global debug function - call this from browser console if needed
 (window as any).debugDragDrop = function() {
-  console.log('🔧 MANUAL DRAG & DROP DEBUG STARTED');
-  debugDraggableElements();
+  console.log('🔧 MANUAL DRAG & DROP DEBUG');
   
-  // Test if we can manually trigger drag events
-  const firstDraggable = document.querySelector('[draggable="true"]');
-  if (firstDraggable) {
-    console.log('🔧 Testing manual drag event on:', firstDraggable);
-    
-    const dragEvent = new DragEvent('dragstart', {
-      bubbles: true,
-      cancelable: true,
-      dataTransfer: new DataTransfer()
-    });
-    
-    const result = firstDraggable.dispatchEvent(dragEvent);
-    console.log('🔧 Manual drag event result:', result);
-  }
+  const draggableElements = document.querySelectorAll('[draggable="true"]');
+  console.log(`Found ${draggableElements.length} draggable elements`);
   
-  // Test drop zones
   ['a', 'b', 'c', 'd'].forEach(side => {
     const deck = document.getElementById(`player-${side}`);
     if (deck) {
-      console.log(`🔧 Testing drop zone ${side}`);
-      
-      const dragOverEvent = new DragEvent('dragover', {
-        bubbles: true,
-        cancelable: true,
-        dataTransfer: new DataTransfer()
+      console.log(`Drop zone ${side}:`, {
+        display: getComputedStyle(deck).display,
+        visibility: getComputedStyle(deck).visibility,
+        pointerEvents: getComputedStyle(deck).pointerEvents
       });
-      
-      const result = deck.dispatchEvent(dragOverEvent);
-      console.log(`🔧 Drop zone ${side} dragover result:`, result);
     }
   });
 };
-
-console.log('🔧 Debug function ready! Call debugDragDrop() from browser console to test.');
 
 function initializePlayerDropZone(side: 'a' | 'b' | 'c' | 'd') {
   const playerDeck = document.getElementById(`player-${side}`);
@@ -13637,22 +14001,31 @@ function initializeMediaLibrary() {
   });
   
   // Check if we have all required credentials for login
-  const hasRequiredCredentials = envUrl && finalUsername && finalPassword;
+  // For unified login: Only URL is required (credentials are server-side)
+  // For direct login: URL, username, and password are required
+  const hasRequiredCredentials = useUnifiedLogin 
+    ? !!envUrl  // Unified: Only URL needed, credentials are on server
+    : !!(envUrl && finalUsername && finalPassword);  // Direct: All three needed
   
   console.log("🔒 UNIFIED LOGIN DEBUG:", {
     envUrl: !!envUrl,
     useUnifiedLogin,
-    note: 'Unified credentials are server-side only (UNIFIED_USERNAME/UNIFIED_PASSWORD)',
+    note: useUnifiedLogin 
+      ? 'Unified mode: Credentials are server-side only (UNIFIED_USERNAME/UNIFIED_PASSWORD)' 
+      : 'Direct mode: Using VITE_OPENSUBSONIC_USERNAME/PASSWORD',
     envUsername: !!envUsername,
     envPassword: !!envPassword,
     finalUsername: !!finalUsername,
     finalPassword: !!finalPassword,
-    hasRequiredCredentials
+    hasRequiredCredentials,
+    credentialsCheck: useUnifiedLogin 
+      ? `Unified: URL present = ${!!envUrl}` 
+      : `Direct: URL=${!!envUrl}, User=${!!finalUsername}, Pass=${!!finalPassword}`
   });
   
   // If credentials are available, delay showing login hint to allow auto-login to complete
   if (hasRequiredCredentials) {
-    console.log("🔄 Auto-login credentials detected, waiting for auto-login...");
+    console.log(`🔄 ${useUnifiedLogin ? 'Unified' : 'Direct'} login credentials detected, waiting for auto-login...`);
     
     // Wait for auto-login with multiple checks
     let checkCount = 0;
@@ -16267,235 +16640,9 @@ document.addEventListener('keydown', (e) => {
 
 console.log('🎧 SubCaster initialized successfully!');
 
-// =====================================
-// GITHUB CAT WITH CRT EFFECTS
-// =====================================
-
-class GitHubCat {
-  private catElement: HTMLElement | null = null;
-  private isAnimating: boolean = false;
-  private audioContext: AudioContext | null = null;
-  private analyser: AnalyserNode | null = null;
-  private dataArray: Uint8Array | null = null;
-  private animationFrame: number = 0;
-
-  constructor() {
-    this.initializeCat();
-  }
-
-  private initializeCat() {
-    this.catElement = document.getElementById('github-cat');
-    if (!this.catElement) return;
-
-    // Click handler to open GitHub repository
-    this.catElement.addEventListener('click', () => {
-      window.open('https://github.com/Lokke/subcaster', '_blank');
-    });
-
-    // Start monitoring audio activity
-    this.monitorAudioActivity();
-  }
-
-  private async monitorAudioActivity() {
-    try {
-      // Get audio context from any active deck
-      const playerA = document.getElementById('player-a-audio') as HTMLAudioElement;
-      const playerB = document.getElementById('player-b-audio') as HTMLAudioElement;
-      const playerC = document.getElementById('player-c-audio') as HTMLAudioElement;
-      const playerD = document.getElementById('player-d-audio') as HTMLAudioElement;
-
-      // Monitor all players for audio activity
-      const players = [playerA, playerB, playerC, playerD].filter(p => p);
-      
-      players.forEach(player => {
-        if (player) {
-          player.addEventListener('play', () => this.startAnimation());
-          player.addEventListener('pause', () => this.checkStopAnimation());
-          player.addEventListener('ended', () => this.checkStopAnimation());
-        }
-      });
-
-      // Also check for live radio stream
-      const radioWaveform = document.querySelector('.live-radio-waveform');
-      if (radioWaveform) {
-        // Start animation when live radio is active
-        const observer = new MutationObserver(() => {
-          if (radioWaveform.classList.contains('active')) {
-            this.startAnimation();
-          } else {
-            this.checkStopAnimation();
-          }
-        });
-        observer.observe(radioWaveform, { attributes: true, attributeFilter: ['class'] });
-      }
-
-      // Monitor microphone activity
-      this.monitorMicrophoneActivity();
-
-    } catch (error) {
-      console.log('🐱 GitHub Cat: Could not set up audio monitoring:', error);
-    }
-  }
-
-  private monitorMicrophoneActivity() {
-    // Check for microphone toggle button
-    const micButton = document.getElementById('mic-toggle');
-    if (micButton) {
-      const observer = new MutationObserver(() => {
-        if (micButton.classList.contains('active')) {
-          this.startAnimation();
-        } else {
-          this.checkStopAnimation();
-        }
-      });
-      observer.observe(micButton, { attributes: true, attributeFilter: ['class'] });
-    }
-  }
-
-  private startAnimation() {
-    if (this.isAnimating || !this.catElement) return;
-    
-    console.log('🐱 GitHub Cat: Starting CRT animation');
-    this.isAnimating = true;
-    this.catElement.classList.add('playing');
-    
-    // Add some randomness to the animation
-    this.addRandomGlitches();
-  }
-
-  private checkStopAnimation() {
-    // Check if any audio is still playing
-    const playerA = document.getElementById('player-a-audio') as HTMLAudioElement;
-    const playerB = document.getElementById('player-b-audio') as HTMLAudioElement;
-    const playerC = document.getElementById('player-c-audio') as HTMLAudioElement;
-    const playerD = document.getElementById('player-d-audio') as HTMLAudioElement;
-    const micButton = document.getElementById('mic-toggle');
-    const radioWaveform = document.querySelector('.live-radio-waveform');
-
-    const anyPlayerPlaying = [playerA, playerB, playerC, playerD]
-      .filter(p => p)
-      .some(player => !player.paused);
-
-    const micActive = micButton?.classList.contains('active') || false;
-    const radioActive = radioWaveform?.classList.contains('active') || false;
-
-    if (!anyPlayerPlaying && !micActive && !radioActive) {
-      this.stopAnimation();
-    }
-  }
-
-  private stopAnimation() {
-    if (!this.isAnimating || !this.catElement) return;
-    
-    console.log('🐱 GitHub Cat: Stopping CRT animation');
-    this.isAnimating = false;
-    this.catElement.classList.remove('playing');
-    
-    if (this.animationFrame) {
-      cancelAnimationFrame(this.animationFrame);
-      this.animationFrame = 0;
-    }
-  }
-
-  private addRandomGlitches() {
-    if (!this.isAnimating || !this.catElement) return;
-
-    // More frequent, irregular glitch intervals (old CRT behavior)
-    const glitchInterval = Math.random() * 2000 + 500; // 0.5-2.5 seconds
-    
-    setTimeout(() => {
-      if (this.isAnimating && this.catElement) {
-        const glitchType = Math.random();
-        
-        if (glitchType < 0.3) {
-          // Power fluctuation glitch
-          this.catElement.style.filter = `
-            brightness(${0.3 + Math.random() * 0.4})
-            contrast(${1.8 + Math.random() * 0.5})
-            drop-shadow(0 0 8px rgba(0, 150, 0, 0.6))
-          `;
-          this.catElement.style.transform = `scaleY(${0.8 + Math.random() * 0.4})`;
-          
-        } else if (glitchType < 0.6) {
-          // Color separation glitch (RGB shift)
-          const redShift = Math.random() * 6 - 3;
-          const blueShift = Math.random() * 6 - 3;
-          this.catElement.style.filter = `
-            drop-shadow(${redShift}px 0 3px rgba(255, 0, 0, 0.7))
-            drop-shadow(${blueShift}px 0 3px rgba(0, 0, 255, 0.7))
-            drop-shadow(0 0 4px rgba(0, 255, 0, 0.4))
-            hue-rotate(${Math.random() * 180 - 90}deg)
-          `;
-          
-        } else if (glitchType < 0.8) {
-          // Horizontal sync issues
-          this.catElement.style.transform = `
-            translateX(${Math.random() * 20 - 10}px)
-            skewX(${Math.random() * 6 - 3}deg)
-            scaleX(${0.7 + Math.random() * 0.6})
-          `;
-          this.catElement.style.filter = `
-            contrast(2)
-            brightness(0.4)
-            saturate(2)
-          `;
-          
-        } else {
-          // Severe interference
-          this.catElement.style.filter = `
-            invert(${Math.random() > 0.5 ? 1 : 0})
-            contrast(${2 + Math.random()})
-            brightness(${0.2 + Math.random() * 0.8})
-            hue-rotate(${Math.random() * 360}deg)
-            drop-shadow(0 0 15px rgba(255, 255, 255, 0.8))
-          `;
-          this.catElement.style.transform = `
-            translate(${Math.random() * 8 - 4}px, ${Math.random() * 8 - 4}px)
-            rotate(${Math.random() * 10 - 5}deg)
-            scale(${0.8 + Math.random() * 0.4})
-          `;
-        }
-
-        // Reset after random short duration
-        const resetTime = 50 + Math.random() * 300;
-        setTimeout(() => {
-          if (this.catElement) {
-            this.catElement.style.filter = '';
-            this.catElement.style.transform = '';
-          }
-        }, resetTime);
-
-        // Schedule next glitch with varying probability
-        if (Math.random() < 0.9) { // 90% chance to continue glitching
-          this.addRandomGlitches();
-        } else {
-          // Sometimes take a longer break
-          setTimeout(() => this.addRandomGlitches(), 2000 + Math.random() * 3000);
-        }
-      }
-    }, glitchInterval);
-  }
-
-  // Public method to manually trigger animation (for testing)
-  public triggerGlitch() {
-    if (this.catElement) {
-      this.startAnimation();
-      setTimeout(() => this.stopAnimation(), 3000);
-    }
-  }
-}
-
-// Initialize GitHub Cat
-const githubCat = new GitHubCat();
-
-// Make it globally available for debugging
-(window as any).githubCat = githubCat;
-
 // ============================================
 // Discord Wishbox Integration
 // ============================================
-
-import { initializeDiscord, getDiscordClient, type DiscordGatewayClient } from './discordGateway';
 
 // Wishbox UI elements (Dropdown)
 const wishboxBtn = document.getElementById('wishbox-btn') as HTMLButtonElement;
@@ -17297,9 +17444,7 @@ function initializeDiscordClient() {
       wishboxBtn.title = 'Discord nicht konfiguriert (env Variablen fehlen)';
     }
   }
-}
-
-(window as any).githubCat = githubCat;
+} // END OF function initializeDiscordClient()
 
 // ========================================
 // 🎯 CONTEXT MENU - Initialize global instance

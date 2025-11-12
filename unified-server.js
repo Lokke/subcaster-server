@@ -1279,6 +1279,29 @@ app.get('/api/health', (req, res) => {
     });
 });
 
+// MediaSoup Conference Debug
+app.get('/api/mediasoup/debug', (req, res) => {
+    if (!mediaSoupServer) {
+        return res.status(503).json({ 
+            error: 'MediaSoup server not initialized',
+            participants: [],
+            totalParticipants: 0
+        });
+    }
+    
+    try {
+        const debugInfo = mediaSoupServer.getDebugInfo();
+        res.json(debugInfo);
+    } catch (error) {
+        console.error('Error getting MediaSoup debug info:', error);
+        res.status(500).json({ 
+            error: error.message,
+            participants: [],
+            totalParticipants: 0
+        });
+    }
+});
+
 // ============================================================================
 //  PRODUCTION: Static Files
 // ============================================================================

@@ -4387,18 +4387,20 @@ body.logged-in .wishbox-frame {
 }
 
 /* ============================================
-   CONFERENCE PANEL
+   CONFERENCE PANEL (inside queue-panel at bottom)
    ============================================ */
 
 .conference-panel {
   background: rgba(0, 0, 0, 0.95);
   border: 2px solid #444;
   border-radius: 2px;
-  margin-top: 0.5rem;
+  margin-top: auto; /* Push to bottom */
   overflow: hidden;
   box-shadow: 
     0 0 5px rgba(68, 68, 68, 0.3),
     inset 0 0 3px rgba(68, 68, 68, 0.2);
+  flex-shrink: 0; /* Don't shrink below content size */
+  min-height: auto; /* Only take space needed */
 }
 
 .conference-header {
@@ -4444,13 +4446,104 @@ body.logged-in .wishbox-frame {
   border-color: #006600;
 }
 
+/* Conference Join Button */
+.conference-join-wrapper {
+  padding: 1rem;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.5rem;
+  background: rgba(0, 0, 0, 0.3);
+  border-bottom: 1px solid #333;
+}
+
+.conference-join-btn {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.6rem 1.2rem;
+  background: linear-gradient(135deg, #448844 0%, #226622 100%);
+  color: #fff;
+  border: 2px solid #44ff44;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  box-shadow: 
+    0 0 10px rgba(68, 255, 68, 0.3),
+    inset 0 0 5px rgba(255, 255, 255, 0.1);
+}
+
+.conference-join-btn:hover {
+  background: linear-gradient(135deg, #55aa55 0%, #338833 100%);
+  border-color: #66ff66;
+  box-shadow: 
+    0 0 15px rgba(68, 255, 68, 0.5),
+    inset 0 0 8px rgba(255, 255, 255, 0.2);
+  transform: translateY(-1px);
+}
+
+.conference-join-btn:active {
+  transform: translateY(0);
+  box-shadow: 
+    0 0 8px rgba(68, 255, 68, 0.4),
+    inset 0 0 3px rgba(0, 0, 0, 0.3);
+}
+
+.conference-join-btn .material-icons {
+  font-size: 16px;
+}
+
+.conference-join-hint {
+  font-size: 7px;
+  color: #888;
+  text-align: center;
+  margin: 0;
+  letter-spacing: 0.3px;
+}
+
+/* Conference Mic Controls */
+.conference-mic-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.15rem 0.25rem;
+  border-radius: 2px;
+  font-size: 10px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  background: rgba(102, 0, 0, 0.3);
+  color: #ff4444;
+  border: 1px solid #660000;
+  margin-left: auto; /* Push to right, before status */
+  margin-right: 0.3rem;
+}
+
+.conference-mic-btn[data-active="true"] {
+  background: rgba(0, 102, 0, 0.3);
+  color: #44ff44;
+  border-color: #006600;
+}
+
+.conference-mic-btn:hover {
+  opacity: 0.8;
+}
+
+.conference-mic-btn .material-icons {
+  font-size: 10px;
+}
+
 .conference-participants {
   padding: 0.3rem;
-  max-height: 200px;
+  max-height: 300px; /* Erhöht für mehr Platz nach oben */
   overflow-y: auto;
   display: flex;
   flex-direction: column;
   gap: 0.2rem;
+  min-height: 0; /* Erlaubt Schrumpfen auf minimale Größe */
 }
 
 /* Custom scrollbar for participants */
@@ -4491,28 +4584,29 @@ body.logged-in .wishbox-frame {
 .conference-participant {
   display: flex;
   align-items: center;
-  gap: 0.3rem;
-  padding: 0.25rem 0.4rem;
-  background: rgba(68, 68, 68, 0.1);
+  gap: 0.25rem;
+  padding: 0.2rem 0.3rem;
+  background: rgba(0, 0, 0, 0.3);
   border: 1px solid #333;
   border-radius: 2px;
   transition: all 0.15s ease;
+  font-size: 7px;
 }
 
 .conference-participant:hover {
-  background: rgba(68, 68, 68, 0.2);
+  background: rgba(68, 68, 68, 0.3);
   border-color: #444;
 }
 
 .conference-participant.speaking {
-  background: rgba(68, 136, 68, 0.2);
-  border-color: #448844;
-  box-shadow: 0 0 5px rgba(68, 136, 68, 0.3);
+  background: rgba(0, 102, 0, 0.2);
+  border-color: #44ff44;
+  box-shadow: 0 0 5px rgba(68, 255, 68, 0.3);
 }
 
 .participant-icon {
-  font-size: 12px;
-  color: #888;
+  font-size: 10px;
+  color: #666;
   flex-shrink: 0;
 }
 
@@ -4522,21 +4616,42 @@ body.logged-in .wishbox-frame {
 
 .participant-name {
   flex: 1;
-  font-size: 8px;
-  font-weight: 500;
+  font-size: 7px;
+  font-weight: 600;
   letter-spacing: 0.3px;
-  color: #ccc;
+  color: #999;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   min-width: 0;
+  text-transform: uppercase;
+}
+
+.conference-participant.speaking .participant-name {
+  color: #44ff44;
+}
+
+.participant-status {
+  font-size: 9px;
+  color: #44ff44;
+  flex-shrink: 0;
+  opacity: 0.6;
+}
+
+.conference-participant.muted .participant-status {
+  color: #ff4444;
+  opacity: 0.8;
+}
+
+.conference-participant.muted .participant-status::before {
+  content: 'mic_off';
 }
 
 .participant-meter {
-  width: 40px;
-  height: 8px;
+  width: 30px;
+  height: 6px;
   background: rgba(0, 0, 0, 0.5);
-  border: 1px solid #333;
+  border: 1px solid #222;
   border-radius: 1px;
   overflow: hidden;
   position: relative;
@@ -4546,13 +4661,13 @@ body.logged-in .wishbox-frame {
 .participant-meter-fill {
   height: 100%;
   width: 0%;
-  background: linear-gradient(90deg, #448844 0%, #44ff44 100%);
+  background: linear-gradient(90deg, #226622 0%, #44ff44 100%);
   transition: width 0.1s ease-out;
   border-radius: 1px;
 }
 
 .participant-meter-fill.high {
-  background: linear-gradient(90deg, #ff8844 0%, #ff4444 100%);
+  background: linear-gradient(90deg, #cc4422 0%, #ff4444 100%);
 }
 
 @keyframes pulse-red {
@@ -11729,30 +11844,9 @@ body:has(#player-c[style*="display: none"]):has(#player-d[style*="display: none"
   color: #999;
 }
 
-/* Version Display - CRT Style */
+/* Version Display - Now in badge stack (hidden, replaced by version-badge) */
 .version-display {
-  position: fixed;
-  bottom: 14px;
-  right: 60px;
-  z-index: 1000;
-  font-family: 'Courier New', monospace;
-  font-size: 11px;
-  color: rgba(100, 255, 100, 0.6);
-  background: rgba(0, 0, 0, 0.3);
-  padding: 4px 8px;
-  border-radius: 3px;
-  border: 1px solid rgba(100, 255, 100, 0.2);
-  text-shadow: 0 0 3px rgba(100, 255, 100, 0.3);
-  opacity: 0.7;
-  transition: opacity 0.3s ease;
-  cursor: default;
-  user-select: none;
-  backdrop-filter: blur(2px);
-}
-
-.version-display:hover {
-  opacity: 1;
-  border-color: rgba(100, 255, 100, 0.4);
+  display: none;
 }
 
 .version-label {
@@ -11765,11 +11859,11 @@ body:has(#player-c[style*="display: none"]):has(#player-d[style*="display: none"
   letter-spacing: 0.5px;
 }
 
-/* GitHub Cat - Old Disturbing CRT Display */
+/* GitHub Cat - Left side */
 .github-cat {
   position: fixed;
   bottom: 8px;
-  right: 8px;
+  left: 8px;
   width: 42px;
   height: 42px;
   z-index: 1000;

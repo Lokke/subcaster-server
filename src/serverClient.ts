@@ -68,14 +68,14 @@ export class ServerClient {
   async connect(): Promise<void> {
     try {
       this.isIntentionalDisconnect = false;
-      console.log('🔌 Connecting to command server...');
+      console.log('[WS-CLIENT] 🔌 Connecting to command server...');
 
       // Connect to command WebSocket
       const commandUrl = this.buildWebSocketUrl('/ws/commands');
       this.commandWs = new WebSocket(commandUrl);
 
       this.commandWs.onopen = () => {
-        console.log('✅ Connected to command server');
+        console.log('[WS-CLIENT] ✅ Connected to command server');
         this.reconnectAttempts = 0; // Reset on successful connection
       };
 
@@ -84,12 +84,12 @@ export class ServerClient {
       };
 
       this.commandWs.onerror = (error) => {
-        console.error('❌ Command WebSocket error:', error);
+        console.error('[WS-CLIENT] ❌ Command WebSocket error:', error);
         this.onError?.('Command connection error');
       };
 
       this.commandWs.onclose = (event) => {
-        console.log('📴 Disconnected from command server');
+        console.log('[WS-CLIENT] 📴 Disconnected from command server (code: ' + event.code + ', reason: ' + event.reason + ')');
         this.onDisconnected?.();
         
         // Auto-reconnect unless intentionally disconnected
@@ -102,7 +102,7 @@ export class ServerClient {
       // Legacy audio WebSocket connection removed
 
     } catch (error) {
-      console.error('❌ Failed to connect:', error);
+      console.error('[WS-CLIENT] ❌ Failed to connect:', error);
       this.onError?.(`Connection failed: ${error}`);
       
       // Auto-reconnect on connection failure
@@ -162,7 +162,7 @@ export class ServerClient {
    */
   private scheduleReconnect(): void {
     if (this.reconnectAttempts >= this.maxReconnectAttempts) {
-      console.error('❌ Max reconnect attempts reached');
+      console.error('[WS-CLIENT] ❌ Max reconnect attempts reached');
       this.onError?.('Connection lost. Please refresh the page.');
       return;
     }
@@ -184,12 +184,12 @@ export class ServerClient {
     const jitter = exponentialDelay * 0.25 * (Math.random() * 2 - 1);
     const delay = Math.max(exponentialDelay + jitter, this.baseReconnectDelay);
 
-    console.log(`🔄 Reconnecting in ${Math.round(delay / 1000)}s (attempt ${this.reconnectAttempts}/${this.maxReconnectAttempts})...`);
+    console.log(`[WS-CLIENT] 🔄 Reconnecting in ${Math.round(delay / 1000)}s (attempt ${this.reconnectAttempts}/${this.maxReconnectAttempts})...`);
 
     this.reconnectTimer = window.setTimeout(() => {
       this.reconnectTimer = null;
       this.connect().catch(err => {
-        console.error('❌ Reconnect failed:', err);
+        console.error('[WS-CLIENT] ❌ Reconnect failed:', err);
       });
     }, delay);
   }
@@ -385,12 +385,12 @@ export class ServerClient {
    */
   private handleWelcome(message: any): void {
     this.clientId = message.clientId;
-    console.log(`🔌 Connected with client ID: ${this.clientId}`);
-    console.log('📊 Initial state:', message.state);
+    console.log(`[WS-CLIENT] 🔌 Connected with client ID: ${this.clientId}`);
+    console.log('[WS-CLIENT] 📊 Initial state:', message.state);
     
     // Trigger complete state sync (decks + queue)
     if (message.state) {
-      console.log('🔄 Syncing initial state from server...');
+      console.log('[WS-CLIENT] 🔄 Syncing initial state from server...');
       this.onInitialStateSync?.(message.state);
       
       // Apply initial deck states
@@ -410,7 +410,7 @@ export class ServerClient {
     this.onConnected?.();
     
     // Automatically request DJ control after connection is established
-    console.log('🎛️ Automatically requesting DJ control...');
+    console.log('[WS-CLIENT] 🎛️ Automatically requesting DJ control...');
     this.requestControl();
   }
 

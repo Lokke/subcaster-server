@@ -141,6 +141,24 @@ class MediaSoupServer extends EventEmitter {
      * Handle client messages
      */
     async handleClientMessage(clientId, data, ws) {
+        // Ensure participant exists with ws reference on first message
+        if (!this.participants.has(clientId)) {
+            console.log(`[MEDIASOUP-SERVER] 🆕 Creating initial participant entry for ${clientId}`);
+            this.participants.set(clientId, {
+                ws,
+                recvTransport: null,
+                sendTransport: null,
+                producer: null,
+                consumers: new Map(),
+                micButtonActive: false,
+                rtpCapabilities: null
+            });
+        } else if (!this.participants.get(clientId).ws) {
+            // Update ws reference if participant was created early (shouldn't happen now)
+            console.log(`[MEDIASOUP-SERVER] 🔄 Adding ws reference to existing participant ${clientId}`);
+            this.participants.get(clientId).ws = ws;
+        }
+
         switch (data.type) {
             case 'getRtpCapabilities':
                 ws.send(JSON.stringify({
@@ -150,7 +168,7 @@ class MediaSoupServer extends EventEmitter {
                 break;
 
             case 'setRtpCapabilities':
-                this.setClientRtpCapabilities(clientId, data.rtpCapabilities);
+                await this.setClientRtpCapabilities(clientId, data.rtpCapabilities);
                 break;
 
             case 'join':
@@ -240,7 +258,7 @@ class MediaSoupServer extends EventEmitter {
      * Client joins conference
      */
     async handleJoin(clientId, ws) {
-        console.log(`👤 Client ${clientId} joining conference...`);
+        console.log(`[MEDIASOUP-SERVER] 👤 Client ${clientId} joining conference...`);
 
         // Create WebRTC transport for client (recv transport)
         const transport = await this.router.createWebRtcTransport({
@@ -250,9 +268,12 @@ class MediaSoupServer extends EventEmitter {
             preferUdp: true,
             initialAvailableOutgoingBitrate: 600000
         });
+        
+        console.log(`[MEDIASOUP-SERVER] ✅ Recv transport created:`, transport.id);
 
         // Store participant
         if (!this.participants.has(clientId)) {
+            console.log(`[MEDIASOUP-SERVER] 🆕 Creating new participant entry`);
             this.participants.set(clientId, {
                 ws,
                 recvTransport: transport,
@@ -263,7 +284,9 @@ class MediaSoupServer extends EventEmitter {
                 rtpCapabilities: null
             });
         } else {
+            console.log(`[MEDIASOUP-SERVER] 🔄 Updating existing participant with ws and recvTransport`);
             const participant = this.participants.get(clientId);
+            participant.ws = ws;  // Add ws reference if it was created early
             participant.recvTransport = transport;
         }
 
@@ -275,12 +298,18 @@ class MediaSoupServer extends EventEmitter {
             iceCandidates: transport.iceCandidates,
             dtlsParameters: transport.dtlsParameters
         }));
+        
+        console.log(`[MEDIASOUP-SERVER] 📤 Sent transportCreated to client`);
 
         // Subscribe to music producer
+        console.log(`[MEDIASOUP-SERVER] 🎵 Attempting to subscribe to music (rtpCapabilities may not be set yet)...`);
         await this.subscribeToMusic(clientId);
         
         // Subscribe to all other participants
+        console.log(`[MEDIASOUP-SERVER] 👥 Subscribing to other participants...`);
         await this.subscribeToAllParticipants(clientId);
+        
+        console.log(`[MEDIASOUP-SERVER] ✅ Join complete for ${clientId}`);
     }
 
     /**
@@ -315,8 +344,23 @@ class MediaSoupServer extends EventEmitter {
      * Subscribe client to server music
      */
     async subscribeToMusic(clientId) {
+        console.log(`[MEDIASOUP-SERVER] 🎵 subscribeToMusic called for ${clientId}`);
+        
         const participant = this.participants.get(clientId);
-        if (!participant || !this.musicProducer || !participant.rtpCapabilities) return;
+        console.log(`[MEDIASOUP-SERVER] 🎵 Participant exists:`, !!participant);
+        console.log(`[MEDIASOUP-SERVER] 🎵 Music producer exists:`, !!this.musicProducer);
+        console.log(`[MEDIASOUP-SERVER] 🎵 RTP capabilities set:`, !!participant?.rtpCapabilities);
+        
+        if (!participant || !this.musicProducer || !participant.rtpCapabilities) {
+            console.warn(`[MEDIASOUP-SERVER] ⚠️ Cannot subscribe to music:`, {
+                hasParticipant: !!participant,
+                hasMusicProducer: !!this.musicProducer,
+                hasRtpCapabilities: !!participant?.rtpCapabilities
+            });
+            return;
+        }
+
+        console.log(`[MEDIASOUP-SERVER] ✅ Creating consumer for music stream...`);
 
         const consumer = await participant.recvTransport.consume({
             producerId: this.musicProducer.id,
@@ -325,6 +369,8 @@ class MediaSoupServer extends EventEmitter {
         });
 
         participant.consumers.set('music', consumer);
+        
+        console.log(`[MEDIASOUP-SERVER] ✅ Music consumer created:`, consumer.id);
 
         participant.ws.send(JSON.stringify({
             type: 'newConsumer',
@@ -334,6 +380,8 @@ class MediaSoupServer extends EventEmitter {
             rtpParameters: consumer.rtpParameters,
             label: 'Server Music'
         }));
+        
+        console.log(`[MEDIASOUP-SERVER] ✅ Sent newConsumer message to client ${clientId}`);
     }
 
     /**
@@ -526,11 +574,75 @@ class MediaSoupServer extends EventEmitter {
     /**
      * Store client RTP capabilities
      */
-    setClientRtpCapabilities(clientId, rtpCapabilities) {
-        const participant = this.participants.get(clientId);
-        if (participant) {
+    async setClientRtpCapabilities(clientId, rtpCapabilities) {
+        console.log(`[MEDIASOUP-SERVER] 📋 Setting RTP capabilities for ${clientId}`);
+        
+        let participant = this.participants.get(clientId);
+        
+        // Create participant entry if not exists (happens when setRtpCapabilities is called before join)
+        if (!participant) {
+            console.log(`[MEDIASOUP-SERVER] 🆕 Creating participant entry for ${clientId} (early registration)`);
+            // We'll get the ws reference later, but we need the entry now
+            participant = {
+                ws: null,
+                recvTransport: null,
+                sendTransport: null,
+                producer: null,
+                consumers: new Map(),
+                micButtonActive: false,
+                rtpCapabilities: rtpCapabilities
+            };
+            this.participants.set(clientId, participant);
+            console.log(`[MEDIASOUP-SERVER] ✅ Participant ${clientId} pre-registered with RTP capabilities`);
+        } else {
             participant.rtpCapabilities = rtpCapabilities;
+            console.log(`[MEDIASOUP-SERVER] ✅ RTP capabilities set for existing participant`);
         }
+        
+        // Debug: Check ws state
+        console.log(`[MEDIASOUP-SERVER] 🔍 Debug - participant.ws:`, {
+            exists: !!participant.ws,
+            readyState: participant.ws ? participant.ws.readyState : 'N/A'
+        });
+        
+        // Send confirmation to client so they can proceed with join
+        // NOTE: Subscriptions will happen AFTER join creates the recvTransport
+        if (participant.ws) {
+            participant.ws.send(JSON.stringify({
+                type: 'rtpCapabilitiesSet'
+            }));
+            console.log(`[MEDIASOUP-SERVER] 📤 Sent rtpCapabilitiesSet confirmation to client`);
+        } else {
+            console.log(`[MEDIASOUP-SERVER] ⚠️ WS not available, cannot send confirmation`);
+        }
+    }
+
+    /**
+     * Get debug information about connected participants
+     */
+    getDebugInfo() {
+        const participants = [];
+        
+        for (const [clientId, participant] of this.participants) {
+            participants.push({
+                clientId,
+                hasRecvTransport: !!participant.recvTransport,
+                hasSendTransport: !!participant.sendTransport,
+                hasProducer: !!participant.producer,
+                consumerCount: participant.consumers ? participant.consumers.size : 0,
+                micButtonActive: participant.micButtonActive || false,
+                hasRtpCapabilities: !!participant.rtpCapabilities,
+                wsConnected: participant.ws && participant.ws.readyState === 1
+            });
+        }
+        
+        return {
+            totalParticipants: this.participants.size,
+            hasMusicProducer: !!this.musicProducer,
+            hasMusicTransport: !!this.musicTransport,
+            routerActive: !!this.router,
+            participants
+        };
     }
 
     /**

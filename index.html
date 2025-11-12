@@ -592,22 +592,6 @@
                 </button>
               </div>
 
-              <!-- Conference Participants Panel -->
-              <div class="conference-panel" id="conference-panel">
-                <div class="conference-header">
-                  <span class="material-icons conference-icon">groups</span>
-                  <span class="conference-title">Conference</span>
-                  <span class="conference-status" id="conference-status">Disconnected</span>
-                </div>
-                <div class="conference-participants" id="conference-participants">
-                  <!-- Participants will be added dynamically -->
-                  <div class="conference-empty">
-                    <span class="material-icons">person_off</span>
-                    <span>Not in conference</span>
-                  </div>
-                </div>
-              </div>
-
             </div>
           </div>
         </div>
@@ -713,6 +697,35 @@
             <div class="queue-empty-dropzone">
               <span class="material-icons">queue_music</span>
               <p>Drop songs here to queue them</p>
+            </div>
+            
+            <!-- Conference Participants Panel (at bottom of queue) -->
+            <div class="conference-panel" id="conference-panel">
+              <div class="conference-header">
+                <span class="material-icons conference-icon">groups</span>
+                <span class="conference-title">Conference</span>
+                <button class="conference-mic-btn" id="conference-mic-btn" data-active="false" style="display: none;" title="Toggle Microphone">
+                  <span class="material-icons">mic_off</span>
+                </button>
+                <span class="conference-status" id="conference-status">Disconnected</span>
+              </div>
+              
+              <!-- Join Conference Button (shown when not joined) -->
+              <div class="conference-join-wrapper" id="conference-join-wrapper" style="display: none;">
+                <button class="conference-join-btn" id="conference-join-btn">
+                  <span class="material-icons">call</span>
+                  <span>Join Conference</span>
+                </button>
+                <p class="conference-join-hint">Click to enable audio and join the conference</p>
+              </div>
+              
+              <div class="conference-participants" id="conference-participants">
+                <!-- Participants will be added dynamically -->
+                <div class="conference-empty">
+                  <span class="material-icons">person_off</span>
+                  <span>Not in conference</span>
+                </div>
+              </div>
             </div>
           </div>
         </div>

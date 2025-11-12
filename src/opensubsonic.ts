@@ -280,18 +280,23 @@ class SubsonicApiClient {
   // Authentifizierung mit OpenSubsonic
   async authenticate(): Promise<boolean> {
     try {
-      // Generiere Salt (random string)
-      const salt = Math.random().toString(36).substring(2, 15);
-      
-      // Erstelle Token: md5(password + salt)
-      const passwordSaltCombo = this.config.password + salt;
-      const token = this.md5(passwordSaltCombo);
-      
-      console.log(`🔐 Auth Debug: password="${this.config.password}", salt="${salt}"`);
-      console.log(`🔐 Auth Debug: password+salt="${passwordSaltCombo}"`);
-      console.log(`🔐 Auth Debug: token="${token}"`);
-      
-      this.auth = { token, salt };
+      // If token+salt already set (from server), use those
+      if (!this.auth) {
+        // Generiere Salt (random string)
+        const salt = Math.random().toString(36).substring(2, 15);
+        
+        // Erstelle Token: md5(password + salt)
+        const passwordSaltCombo = this.config.password + salt;
+        const token = this.md5(passwordSaltCombo);
+        
+        console.log(`🔐 Auth Debug: password="${this.config.password}", salt="${salt}"`);
+        console.log(`🔐 Auth Debug: password+salt="${passwordSaltCombo}"`);
+        console.log(`🔐 Auth Debug: token="${token}"`);
+        
+        this.auth = { token, salt };
+      } else {
+        console.log(`🔐 Using pre-set token+salt from server`);
+      }
 
       // Teste Authentifizierung mit ping
       const response = await this.makeRequest('ping');
@@ -321,8 +326,8 @@ class SubsonicApiClient {
     const queryString = new URLSearchParams(allParams).toString();
     const url = `${this.config.serverUrl}/rest/${method}?${queryString}`;
 
-    console.log('🌐 OpenSubsonic API Request:', method, 'URL:', url.split('?')[0]);
-    console.log('📋 Parameters:', Object.keys(allParams));
+    // Logging disabled - enable with VITE_LOG_CATEGORIES=OPENSUBSONIC
+    // console.log('🌐 OpenSubsonic API Request:', method);
 
     try {
       const response = await fetch(url, {
@@ -333,14 +338,14 @@ class SubsonicApiClient {
         mode: 'cors' // Explizit CORS-Modus setzen
       });
 
-      console.log('📥 Response status:', response.status, response.statusText);
+      // console.log('📥 Response status:', response.status);
 
       if (!response.ok) {
         throw new Error(`HTTP error! status: ${response.status} - ${response.statusText}`);
       }
 
       const data = await response.json();
-      console.log('📦 Response data received');
+      // console.log('📦 Response data received');
       
       if (data['subsonic-response'].status !== 'ok') {
         const errorMsg = data['subsonic-response'].error?.message || 'Unknown error';

@@ -58,7 +58,10 @@ export class MediaSoupClient {
         this.serverUrl = serverUrl;
         
         // Audio routing: All streams → GainNodes → Master → Destination
-        this.audioContext = new AudioContext({ sampleRate: 48000 });
+        // Let browser choose optimal sample rate (don't force 48000)
+        this.audioContext = new AudioContext();
+        console.log(`[CONFERENCE] 🎵 AudioContext created with sample rate: ${this.audioContext.sampleRate}Hz`);
+        
         this.masterGain = this.audioContext.createGain();
         this.musicGain = this.audioContext.createGain();
         this.voicesGain = this.audioContext.createGain();
@@ -153,20 +156,24 @@ export class MediaSoupClient {
      * Handle server messages
      */
     private async handleMessage(data: any): Promise<void> {
+        console.log('[CONFERENCE] 📨 Received message:', data.type);
+        
         switch (data.type) {
             case 'rtpCapabilities':
+                console.log('[CONFERENCE] 📡 Loading RTP capabilities...');
                 // Load device with router capabilities
                 await this.device!.load({ routerRtpCapabilities: data.rtpCapabilities });
-                console.log('✅ Device loaded with RTP capabilities');
+                console.log('[CONFERENCE] ✅ Device loaded with RTP capabilities');
                 
                 // Send our capabilities to server
+                console.log('[CONFERENCE] 📤 Sending client RTP capabilities to server');
                 this.send({
                     type: 'setRtpCapabilities',
                     rtpCapabilities: this.device!.rtpCapabilities
                 });
                 
-                // Request to join conference
-                this.send({ type: 'join' });
+                // DON'T send join yet - wait for rtpCapabilitiesSet confirmation
+                console.log('[CONFERENCE] ⏳ Waiting for server to confirm RTP capabilities...');
                 
                 // Resolve device initialization
                 if ((this as any).deviceInitResolve) {
@@ -175,7 +182,15 @@ export class MediaSoupClient {
                 }
                 break;
             
+            case 'rtpCapabilitiesSet':
+                // Server confirmed our capabilities are set, NOW we can join
+                console.log('[CONFERENCE] ✅ Server confirmed RTP capabilities set');
+                console.log('[CONFERENCE] 📤 Sending join request');
+                this.send({ type: 'join' });
+                break;
+            
             case 'transportCreated':
+                console.log('[CONFERENCE] 🚚 Transport created, setting up...');
                 await this.createTransports(data);
                 break;
             
@@ -185,18 +200,19 @@ export class MediaSoupClient {
                     (this as any).transportConnectCallback();
                     delete (this as any).transportConnectCallback;
                     delete (this as any).transportConnectErrback;
-                    console.log('✅ Recv transport connected to server');
+                    console.log('[CONFERENCE] ✅ Recv transport connected to server');
                 }
                 // Also check for send transport callback
                 if ((this as any).sendTransportConnectCallback) {
                     (this as any).sendTransportConnectCallback();
                     delete (this as any).sendTransportConnectCallback;
                     delete (this as any).sendTransportConnectErrback;
-                    console.log('✅ Send transport connected to server');
+                    console.log('[CONFERENCE] ✅ Send transport connected to server');
                 }
                 break;
             
             case 'sendTransportCreated':
+                console.log('[CONFERENCE] 🚚 Send transport created');
                 await this.setupSendTransport(data);
                 break;
             
@@ -206,20 +222,22 @@ export class MediaSoupClient {
                     (this as any).produceCallback({ id: data.producerId });
                     delete (this as any).produceCallback;
                     delete (this as any).produceErrback;
-                    console.log('✅ Producer created:', data.producerId);
+                    console.log('[CONFERENCE] ✅ Producer created:', data.producerId);
                 }
                 break;
                 
             case 'newConsumer':
+                console.log('[CONFERENCE] 🆕 New consumer message received');
                 await this.consumeStream(data);
                 break;
                 
             case 'consumerClosed':
+                console.log('[CONFERENCE] 🚪 Consumer closed:', data.consumerId);
                 this.closeConsumer(data.consumerId);
                 break;
                 
             default:
-                console.log('📨 Unknown message:', data);
+                console.log('[CONFERENCE] 📨 Unknown message:', data);
         }
     }
 
@@ -256,7 +274,18 @@ export class MediaSoupClient {
      * Consume incoming stream (music or user voice)
      */
     private async consumeStream(data: any): Promise<void> {
-        if (!this.recvTransport) return;
+        console.log('[CONFERENCE] 📥 Received newConsumer message:', {
+            consumerId: data.consumerId,
+            producerId: data.producerId,
+            label: data.label,
+            kind: data.kind,
+            hasRecvTransport: !!this.recvTransport
+        });
+        
+        if (!this.recvTransport) {
+            console.error('[CONFERENCE] ❌ No receive transport available!');
+            return;
+        }
         
         const consumer = await this.recvTransport.consume({
             id: data.consumerId,
@@ -265,10 +294,14 @@ export class MediaSoupClient {
             rtpParameters: data.rtpParameters
         });
         
+        console.log('[CONFERENCE] ✅ Consumer created:', consumer.id);
+        
         const stream = new MediaStream([consumer.track]);
         const audioElement = new Audio();
         audioElement.srcObject = stream;
         audioElement.autoplay = true;
+        
+        console.log('[CONFERENCE] 🔊 Audio element created, autoplay:', audioElement.autoplay);
         
         // Create gain node for volume control
         const source = this.audioContext.createMediaStreamSource(stream);
@@ -289,11 +322,21 @@ export class MediaSoupClient {
             label: data.label
         });
         
+        console.log('[CONFERENCE] 🎧 Stream stored:', {
+            streamId,
+            label: data.label,
+            isMusic: isMusicStream,
+            totalStreams: this.streams.size
+        });
+        
         console.log(`🎧 Consuming: ${data.label} (${isMusicStream ? 'Music' : 'Voice'})`);
         
         // Notify UI about new participant
         if (this.onParticipantJoined) {
+            console.log('[CONFERENCE] 🔔 Calling onParticipantJoined callback');
             this.onParticipantJoined(streamId, isMusicStream);
+        } else {
+            console.warn('[CONFERENCE] ⚠️ No onParticipantJoined callback set!');
         }
         
         // Setup audio level monitoring for ALL streams (music + voices)

@@ -8,28 +8,82 @@
  * - Persistent playback (independent of browser)
  */
 
-import ffmpeg from 'fluent-ffmpeg';
-import ffmpegPath from '@ffmpeg-installer/ffmpeg';
 import { EventEmitter } from 'events';
 import { PassThrough } from 'stream';
-import { execSync } from 'child_process';
+import { spawn, execSync } from 'child_process';
+import { promises as fs, createWriteStream } from 'fs';
+import https from 'https';
+import http from 'http';
+import path from 'path';
+import crypto from 'crypto';
+import os from 'os';
 
-// Try to use system ffmpeg first (more stable and up-to-date)
-// Fall back to bundled ffmpeg if system version not available
-let ffmpegBinaryPath;
+// Check if sox is available
+let soxAvailable = false;
 try {
-  // Check if system ffmpeg exists
-  execSync('which ffmpeg', { stdio: 'ignore' });
-  ffmpegBinaryPath = 'ffmpeg'; // Use system ffmpeg
-  console.log('✅ Using system FFmpeg');
+  execSync('which sox', { stdio: 'ignore' });
+  soxAvailable = true;
+  console.log('✅ Using system sox for audio playback');
 } catch (error) {
-  // Fall back to bundled ffmpeg
-  ffmpegBinaryPath = ffmpegPath.path;
-  console.log(`⚠️ System FFmpeg not found, using bundled version: ${ffmpegBinaryPath}`);
+  console.error('❌ sox not found! Please install: sudo apt-get install sox libsox-fmt-mp3');
+  console.error('   Playback will not work without sox!');
 }
 
-// Set ffmpeg path
-ffmpeg.setFfmpegPath(ffmpegBinaryPath);
+/**
+ * Download a track from URL to temporary file
+ */
+async function downloadTrack(url, trackId) {
+  return new Promise((resolve, reject) => {
+    // Create unique filename
+    const fileName = `track_${trackId}_${crypto.randomBytes(8).toString('hex')}.mp3`;
+    const tempDir = os.tmpdir();
+    const filePath = path.join(tempDir, fileName);
+
+    console.log(`📥 Downloading track to: ${filePath}`);
+
+    // Choose http or https module based on URL
+    const client = url.startsWith('https:') ? https : http;
+
+    const request = client.get(url, {
+      headers: {
+        'User-Agent': 'SubCaster/1.0'
+      },
+      timeout: 30000 // 30 second timeout
+    }, (response) => {
+      if (response.statusCode !== 200) {
+        reject(new Error(`HTTP ${response.statusCode}: ${response.statusMessage}`));
+        return;
+      }
+
+      const fileStream = createWriteStream(filePath);
+      response.pipe(fileStream);
+
+      fileStream.on('finish', () => {
+        fileStream.close();
+        console.log(`✅ Download complete: ${filePath} (${response.headers['content-length'] || 'unknown'} bytes)`);
+        resolve(filePath);
+      });
+
+      fileStream.on('error', (err) => {
+        console.error(`❌ File write error:`, err);
+        // Clean up partial file
+        fs.unlink(filePath).catch(() => {});
+        reject(err);
+      });
+    });
+
+    request.on('error', (err) => {
+      console.error(`❌ Download error:`, err);
+      reject(err);
+    });
+
+    request.on('timeout', () => {
+      request.destroy();
+      console.error(`⏰ Download timeout`);
+      reject(new Error('Download timeout'));
+    });
+  });
+}
 
 /**
  * Single Audio Deck
@@ -40,8 +94,9 @@ class AudioDeck extends EventEmitter {
     this.id = id;
     this.state = 'empty'; // empty, loading, ready, playing, paused, ended, error
     this.currentTrack = null;
-    this.ffmpegProcess = null;
+    this.soxProcess = null;          // sox playback process
     this.audioStream = null;
+    this.downloadedFilePath = null;  // Path to downloaded MP3 file
     this.volume = 1.0;
     this.position = 0;
     this.duration = 0;
@@ -54,15 +109,15 @@ class AudioDeck extends EventEmitter {
   async load(url, metadata) {
     console.log(`🎵 [Deck ${this.id}] Loading: ${metadata.title}`);
     
-    // Clean up any existing ffmpeg process before loading new track
-    if (this.ffmpegProcess) {
-      console.log(`🧹 [Deck ${this.id}] Stopping previous FFmpeg process`);
+    // Clean up any existing sox process before loading new track
+    if (this.soxProcess) {
+      console.log(`🧹 [Deck ${this.id}] Stopping previous sox process`);
       try {
-        this.ffmpegProcess.kill('SIGTERM');
+        this.soxProcess.kill('SIGTERM');
       } catch (err) {
-        console.warn(`⚠️ [Deck ${this.id}] Error stopping FFmpeg:`, err.message);
+        console.warn(`⚠️ [Deck ${this.id}] Error stopping sox:`, err.message);
       }
-      this.ffmpegProcess = null;
+      this.soxProcess = null;
     }
     
     if (this.audioStream) {
@@ -73,6 +128,17 @@ class AudioDeck extends EventEmitter {
       }
       this.audioStream = null;
     }
+
+    // Clean up old downloaded file if exists
+    if (this.downloadedFilePath) {
+      try {
+        await fs.unlink(this.downloadedFilePath);
+        console.log(`🗑️ [Deck ${this.id}] Cleaned up old file: ${this.downloadedFilePath}`);
+      } catch (err) {
+        // Ignore if file doesn't exist
+      }
+      this.downloadedFilePath = null;
+    }
     
     this.state = 'loading';
     this.currentTrack = metadata;
@@ -81,7 +147,7 @@ class AudioDeck extends EventEmitter {
     try {
       // Extract original URL from proxy URL if present
       // Format: /api/opensubsonic-stream?url=<encoded-original-url>
-      let ffmpegUrl = url;
+      let downloadUrl = url;
       
       if (url.includes('/api/opensubsonic-stream?url=')) {
         try {
@@ -89,74 +155,186 @@ class AudioDeck extends EventEmitter {
           const urlMatch = url.match(/[?&]url=([^&]+)/);
           if (urlMatch && urlMatch[1]) {
             const decodedUrl = decodeURIComponent(urlMatch[1]);
-            ffmpegUrl = decodedUrl;
+            downloadUrl = decodedUrl;
             console.log(`🔧 [Deck ${this.id}] Extracted original URL from proxy`);
             console.log(`   Proxy: ${url}`);
-            console.log(`   Original: ${ffmpegUrl}`);
+            console.log(`   Original: ${downloadUrl}`);
           }
         } catch (err) {
           console.warn(`⚠️ [Deck ${this.id}] Failed to extract original URL, using as-is:`, err.message);
         }
       } else if (url.startsWith('/')) {
         // Relative URL - prepend localhost:3002
-        ffmpegUrl = `http://localhost:3002${url}`;
-        console.log(`🔧 [Deck ${this.id}] Normalized relative URL: ${url} → ${ffmpegUrl}`);
+        downloadUrl = `http://localhost:3002${url}`;
+        console.log(`🔧 [Deck ${this.id}] Normalized relative URL: ${url} → ${downloadUrl}`);
       }
       
-      // Create audio stream from URL using ffmpeg
-      this.audioStream = new PassThrough();
+      // ========================================
+      // STEP 1: Download the MP3 file
+      // ========================================
+      console.log(`📥 [Deck ${this.id}] Downloading track...`);
+      this.emit('stateChange', { deck: this.id, state: this.state, track: metadata, progress: 'downloading' });
       
-      // Quote URL to handle special characters (& ? =) correctly
-      // FFmpeg needs quoted strings for URLs with query parameters
-      const quotedUrl = `"${ffmpegUrl}"`;
+      const localFilePath = await downloadTrack(downloadUrl, metadata.id || this.id);
+      this.downloadedFilePath = localFilePath;
+      console.log(`✅ [Deck ${this.id}] Download complete: ${localFilePath}`);
       
-      this.ffmpegProcess = ffmpeg(quotedUrl)
-        .format('s16le') // PCM signed 16-bit little-endian
-        .audioChannels(2) // Stereo
-        .audioFrequency(48000) // 48kHz
-        .on('start', (commandLine) => {
-          console.log(`🔧 [Deck ${this.id}] FFmpeg started: ${commandLine}`);
-        })
-        .on('codecData', (data) => {
-          this.duration = this.parseDuration(data.duration);
-          console.log(`⏱️ [Deck ${this.id}] Duration: ${this.duration}s`);
-        })
-        .on('error', (err) => {
-          console.error(`❌ [Deck ${this.id}] FFmpeg error:`, err);
-          this.state = 'error';
-          this.emit('stateChange', { deck: this.id, state: this.state, error: err.message });
-        })
-        .on('end', () => {
-          console.log(`🏁 [Deck ${this.id}] Track ended`);
-          this.state = 'ended';
-          this.emit('stateChange', { deck: this.id, state: this.state });
-          this.emit('ended');
-        });
-
-      // Pipe to PassThrough stream
-      this.ffmpegProcess.pipe(this.audioStream, { end: true });
-
+      // ========================================
+      // STEP 2: Get duration from downloaded file (probe with ffmpeg)
+      // ========================================
+      console.log(`🔍 [Deck ${this.id}] Reading track metadata...`);
+      this.emit('stateChange', { deck: this.id, state: this.state, track: metadata, progress: 'probing' });
+      
+      try {
+        // Use ffprobe to get duration WITHOUT starting playback
+        const duration = await this.probeDuration(localFilePath);
+        this.duration = duration;
+        console.log(`⏱️ [Deck ${this.id}] Duration: ${this.duration}s`);
+      } catch (err) {
+        console.warn(`⚠️ [Deck ${this.id}] Could not probe duration:`, err.message);
+        this.duration = metadata.duration || 0; // Fallback to metadata
+      }
+      
+      // ========================================
+      // READY STATE: File downloaded, waiting for play command
+      // ========================================
       this.state = 'ready';
-      this.emit('stateChange', { deck: this.id, state: this.state });
+      this.currentTrack = metadata;
+      this.currentTrack.duration = this.duration; // Update with real duration
+      this.emit('stateChange', { 
+        deck: this.id, 
+        state: this.state, 
+        track: this.currentTrack,
+        duration: this.duration 
+      });
       
-      console.log(`✅ [Deck ${this.id}] Ready to play`);
+      console.log(`✅ [Deck ${this.id}] Ready to play (${this.duration}s)`);
       return true;
 
     } catch (error) {
       console.error(`❌ [Deck ${this.id}] Load failed:`, error);
       this.state = 'error';
       this.emit('stateChange', { deck: this.id, state: this.state, error: error.message });
+      
+      // Clean up downloaded file on error
+      if (this.downloadedFilePath) {
+        fs.unlink(this.downloadedFilePath).catch(() => {});
+        this.downloadedFilePath = null;
+      }
+      
       return false;
     }
   }
 
   /**
+   * Probe duration from file using sox
+   */
+  probeDuration(filePath) {
+    return new Promise((resolve, reject) => {
+      // Use soxi to get duration (sox info utility)
+      const soxi = spawn('soxi', ['-D', filePath]);
+      
+      let output = '';
+      soxi.stdout.on('data', (data) => {
+        output += data.toString();
+      });
+      
+      soxi.on('close', (code) => {
+        if (code === 0) {
+          const duration = parseFloat(output.trim());
+          if (!isNaN(duration)) {
+            resolve(duration);
+          } else {
+            reject(new Error('Could not parse duration'));
+          }
+        } else {
+          reject(new Error(`soxi exited with code ${code}`));
+        }
+      });
+      
+      soxi.on('error', (err) => {
+        reject(err);
+      });
+    });
+  }
+
+  /**
    * Play the loaded track
    */
-  play() {
+  async play() {
     if (this.state !== 'ready' && this.state !== 'paused') {
       console.warn(`⚠️ [Deck ${this.id}] Cannot play, state: ${this.state}`);
       return false;
+    }
+
+    // If this is first play (not resume from pause), start sox
+    if (this.state === 'ready' && !this.soxProcess && this.downloadedFilePath) {
+      console.log(`🎵 [Deck ${this.id}] Starting sox for playback...`);
+      
+      if (!soxAvailable) {
+        console.error(`❌ [Deck ${this.id}] sox is not available!`);
+        this.state = 'error';
+        this.emit('stateChange', { deck: this.id, state: this.state, error: 'sox not installed' });
+        return false;
+      }
+      
+      try {
+        // Create audio stream
+        this.audioStream = new PassThrough();
+        
+        // Start sox process
+        // sox input.mp3 -t raw -r 48000 -e signed -b 16 -c 2 - (outputs PCM to stdout)
+        this.soxProcess = spawn('sox', [
+          this.downloadedFilePath,  // Input file
+          '-t', 'raw',              // Output type: raw PCM
+          '-r', '48000',            // Sample rate: 48kHz
+          '-e', 'signed',           // Encoding: signed integer
+          '-b', '16',               // Bit depth: 16-bit
+          '-c', '2',                // Channels: stereo
+          '-'                       // Output to stdout
+        ]);
+        
+        // Pipe sox output to our audio stream
+        this.soxProcess.stdout.pipe(this.audioStream);
+        
+        this.soxProcess.stderr.on('data', (data) => {
+          // Sox outputs progress info to stderr, we can ignore it
+          // console.log(`[Deck ${this.id}] sox: ${data.toString().trim()}`);
+        });
+        
+        this.soxProcess.on('error', (err) => {
+          console.error(`❌ [Deck ${this.id}] sox error:`, err);
+          this.state = 'error';
+          this.emit('stateChange', { deck: this.id, state: this.state, error: err.message });
+        });
+        
+        this.soxProcess.on('close', (code) => {
+          if (code === 0) {
+            console.log(`🏁 [Deck ${this.id}] Track ended`);
+            this.state = 'ended';
+            this.emit('stateChange', { deck: this.id, state: this.state });
+            this.emit('ended');
+          } else if (code !== null) {
+            console.error(`❌ [Deck ${this.id}] sox exited with code ${code}`);
+            this.state = 'error';
+            this.emit('stateChange', { deck: this.id, state: this.state, error: `sox exited with code ${code}` });
+          }
+          
+          // Clean up downloaded file after playback ends
+          if (this.downloadedFilePath) {
+            fs.unlink(this.downloadedFilePath).then(() => {
+              console.log(`🗑️ [Deck ${this.id}] Cleaned up: ${this.downloadedFilePath}`);
+            }).catch(() => {});
+            this.downloadedFilePath = null;
+          }
+        });
+        
+      } catch (error) {
+        console.error(`❌ [Deck ${this.id}] Failed to start sox:`, error);
+        this.state = 'error';
+        this.emit('stateChange', { deck: this.id, state: this.state, error: error.message });
+        return false;
+      }
     }
 
     console.log(`▶️ [Deck ${this.id}] Playing`);
@@ -220,14 +398,25 @@ class AudioDeck extends EventEmitter {
     
     this.stopPositionTracking();
     
-    if (this.ffmpegProcess) {
-      this.ffmpegProcess.kill('SIGKILL');
-      this.ffmpegProcess = null;
+    if (this.soxProcess) {
+      this.soxProcess.kill('SIGKILL');
+      this.soxProcess = null;
     }
     
     if (this.audioStream) {
       this.audioStream.destroy();
       this.audioStream = null;
+    }
+    
+    // Clean up downloaded file
+    if (this.downloadedFilePath) {
+      try {
+        await fs.unlink(this.downloadedFilePath);
+        console.log(`🗑️ [Deck ${this.id}] Cleaned up: ${this.downloadedFilePath}`);
+      } catch (err) {
+        // Ignore if file doesn't exist
+      }
+      this.downloadedFilePath = null;
     }
     
     this.state = 'empty';

@@ -9,10 +9,12 @@ export interface DeckState {
   id: string;
   state: 'empty' | 'loading' | 'ready' | 'playing' | 'paused' | 'ended' | 'error';
   track: {
+    id?: string;
     title: string;
     artist: string;
     album: string;
     duration: number;
+    coverArt?: string;
   } | null;
   volume: number;
   position: number;

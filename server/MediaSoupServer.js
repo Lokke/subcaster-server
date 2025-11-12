@@ -234,13 +234,12 @@ class MediaSoupServer extends EventEmitter {
     }
 
     /**
-     * Connect AudioEngine output to MediaSoup
+     * Connect Liquidsoap output to MediaSoup
      */
     connectAudioEngine() {
-        // TODO: Replace AudioStreamServer with RTP sender
-        // AudioEngine → FFmpeg → Opus RTP → MediaSoup PlainTransport
+        // Liquidsoap → RTP Opus (port 5004) → MediaSoup PlainTransport
         
-        console.log('📡 Connecting AudioEngine to MediaSoup transport...');
+        console.log('📡 Connecting Liquidsoap RTP to MediaSoup transport...');
         
         // This will replace the WebSocket audio streaming
         // FFmpeg command: 
@@ -513,13 +512,13 @@ class MediaSoupServer extends EventEmitter {
         if (!participant || !participant.producer) return;
 
         if (enable) {
-            // TODO: Add this audio stream to AzuraCast mixer
-            // AudioMixer should mix: ServerMusic + ActiveUserMics → AzuraCast
-            console.log(`➕ Adding ${clientId} mic to AzuraCast mix`);
-            this.emit('addToAzuraCastMix', clientId, participant.producer);
+            // Microphones are forwarded to Liquidsoap Harbor Input (port 8001)
+            // Liquidsoap mixes: Music + Microphones → RTP Output → AzuraCast
+            console.log(`➕ Adding ${clientId} mic to Liquidsoap mix`);
+            this.emit('addToLiquidsoapMix', clientId, participant.producer);
         } else {
-            console.log(`➖ Removing ${clientId} mic from AzuraCast mix`);
-            this.emit('removeFromAzuraCastMix', clientId);
+            console.log(`➖ Removing ${clientId} mic from Liquidsoap mix`);
+            this.emit('removeFromLiquidsoapMix', clientId);
         }
     }
 

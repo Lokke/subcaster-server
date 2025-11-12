@@ -1,8 +1,8 @@
 /**
  * AzuraCastOutput.js - Stream Output to AzuraCast
  * 
- * Takes the broadcast stream (decks + microphones) and streams it to AzuraCast
- * using Icecast/SHOUTcast protocol
+ * Takes the broadcast stream from Liquidsoap (music + microphones mixed)
+ * and streams it to AzuraCast using Icecast/SHOUTcast protocol
  */
 
 import ffmpeg from 'fluent-ffmpeg';
@@ -13,8 +13,8 @@ import net from 'net';
 ffmpeg.setFfmpegPath(ffmpegPath.path);
 
 export class AzuraCastOutput {
-  constructor(audioMixer, config) {
-    this.audioMixer = audioMixer;
+  constructor(liquidsoapController, config) {
+    this.liquidsoapController = liquidsoapController;
     this.config = {
       server: config.server || 'localhost',
       port: config.port || 8000,
@@ -50,10 +50,10 @@ export class AzuraCastOutput {
     console.log('📡 Starting AzuraCast streaming...');
     
     try {
-      const broadcastStream = this.audioMixer.getBroadcastStream();
+      const broadcastStream = this.liquidsoapController.getBroadcastStream();
       
       if (!broadcastStream) {
-        throw new Error('No broadcast stream available');
+        throw new Error('No broadcast stream available from Liquidsoap');
       }
       
       // Create Icecast URL

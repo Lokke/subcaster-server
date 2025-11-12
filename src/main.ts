@@ -9,6 +9,13 @@ import { initElectronTitlebar } from "./electron-titlebar";
 import * as THREE from 'three';
 import { initializeDiscord, getDiscordClient, type DiscordGatewayClient } from './discordGateway';
 
+// Extend Window interface for deck ready promises
+declare global {
+  interface Window {
+    deckReadyPromises?: { [key: string]: { resolve: () => void; reject: (error: Error) => void; timeout: NodeJS.Timeout } };
+  }
+}
+
 // 🚀 WebGPU & Hardware Acceleration
 import { initWebGPU, isWebGPUAvailable, enableHardwareAcceleration } from './webgpu-utils';
 
@@ -345,6 +352,22 @@ async function initializeServerAudio(): Promise<void> {
     };    serverClient.onStateChange = (state: DeckState) => {
       console.log('🎵 Server deck state changed:', state);
       updateDeckUIFromServer(state);
+
+      // Check if someone is waiting for this deck to be ready
+      if (window.deckReadyPromises && window.deckReadyPromises[state.id]) {
+        const promise = window.deckReadyPromises[state.id];
+        if (state.state === 'ready') {
+          console.log(`✅ [Deck ${state.id.toUpperCase()}] Resolving wait promise`);
+          clearTimeout(promise.timeout);
+          promise.resolve();
+          delete window.deckReadyPromises[state.id];
+        } else if (state.state === 'error') {
+          console.error(`❌ [Deck ${state.id.toUpperCase()}] Rejecting wait promise due to error`);
+          clearTimeout(promise.timeout);
+          promise.reject(new Error(`Deck ${state.id.toUpperCase()} failed to load`));
+          delete window.deckReadyPromises[state.id];
+        }
+      }
     };
     
     serverClient.onPositionUpdate = (deck: string, position: number) => {
@@ -11524,6 +11547,29 @@ function clearWaveformInfo(side: 'a' | 'b' | 'c' | 'd') {
   if (albumElement) albumElement.textContent = '';
 }
 
+/**
+ * Wait for a deck to be ready on the server
+ */
+function waitForDeckReady(side: 'a' | 'b' | 'c' | 'd', timeoutMs: number = 10000): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      console.warn(`⏰ [Deck ${side.toUpperCase()}] Timeout waiting for ready state, proceeding anyway`);
+      resolve(); // Don't reject, just proceed
+    }, timeoutMs);
+
+    // Create a unique promise for this wait operation
+    const waitPromise = { resolve, reject, timeout };
+
+    // Store the promise to be resolved by the state change handler
+    if (!window.deckReadyPromises) {
+      window.deckReadyPromises = {};
+    }
+    window.deckReadyPromises[side] = waitPromise;
+
+    console.log(`⏳ [Deck ${side.toUpperCase()}] Waiting for server ready state...`);
+  });
+}
+
 async function loadTrackToPlayer(side: 'a' | 'b' | 'c' | 'd', song: OpenSubsonicSong, autoPlay: boolean = false) {
   if (!openSubsonicClient) {
     console.error('OpenSubsonic client not initialized');
@@ -11578,10 +11624,13 @@ async function loadTrackToPlayer(side: 'a' | 'b' | 'c' | 'd', song: OpenSubsonic
     
     // Autoplay if requested
     if (autoPlay) {
-      // Wait a moment for server to load, then play
-      setTimeout(() => {
+      // Wait for server to be ready before playing
+      waitForDeckReady(side).then(() => {
+        console.log(`🎵 [Deck ${side.toUpperCase()}] Server ready, starting auto-play`);
         serverClient!.play(side);
-      }, 1000);
+      }).catch((error: any) => {
+        console.error(`❌ [Deck ${side.toUpperCase()}] Failed to wait for ready state:`, error);
+      });
     }
     
     console.log(`✅ SERVER MODE: Load command sent for deck ${side.toUpperCase()}`);

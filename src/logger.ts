@@ -308,47 +308,7 @@ export class Logger {
   }
 }
 
-/**
- * Create a logger for a specific category
- */
-export function createLogger(category: LogCategory): Logger {
-  return new Logger(category);
-}
-
-/**
- * Enable/disable a category at runtime
- */
-export function setCategory(category: LogCategory, enabled: boolean): void {
-  config.categories.set(category, enabled);
-}
-
-/**
- * Set minimum log level for a category
- */
-export function setCategoryLevel(category: LogCategory, level: LogLevel): void {
-  config.categoryLevels.set(category, level);
-}
-
-/**
- * Set global minimum log level
- */
-export function setGlobalLevel(level: LogLevel): void {
-  config.globalLevel = level;
-}
-
-/**
- * Get current configuration (for debugging)
- */
-export function getConfig(): Readonly<LoggerConfig> {
-  return config;
-}
-
-/**
- * Reset to default configuration
- */
-export function resetConfig(): void {
-  config = { ...defaultConfig };
-}
+// Removed unused exports: createLogger, setCategory, setCategoryLevel, setGlobalLevel, getConfig, resetConfig
 
 // Auto-initialize on module load
 initLogger();

@@ -7,6 +7,7 @@
 import { spawn } from 'child_process';
 import { createConnection } from 'net';
 import { EventEmitter } from 'events';
+import http from 'http';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import ffmpeg from 'fluent-ffmpeg';
@@ -29,12 +30,14 @@ export class LiquidsoapController extends EventEmitter {
     this.telnetPort = 1234;
     this.telnetHost = '127.0.0.1';
     
-    // RTP Output configuration (matches radio.liq)
-    this.rtpHost = '127.0.0.1';
-    this.rtpPort = 5004;
+    // Harbor Output configuration (matches radio.liq)
+    this.harborHost = '127.0.0.1';
+    this.monitorPort = 8002;  // DECKS ONLY for DJ monitoring
+    this.broadcastPort = 8003; // DECKS + MICS for listeners
     
-    // PCM output stream (for AzuraCastOutput)
-    this.broadcastStream = null;
+    // PCM output streams
+    this.monitorStream = null;     // For MediaSoup (DJs)
+    this.broadcastStream = null;   // For AzuraCast (Listeners)
     
     // Deck states (tracked locally)
     this.deckStates = {
@@ -54,6 +57,13 @@ export class LiquidsoapController extends EventEmitter {
    */
   async start() {
     console.log('🎵 Starting Liquidsoap...');
+    console.log('🔍 Stack trace:', new Error().stack);
+    
+    // Prevent duplicate starts
+    if (this.liquidsoap && !this.liquidsoap.killed) {
+      console.log('⚠️  Liquidsoap already running, skipping start');
+      return;
+    }
     
     const scriptPath = path.join(__dirname, 'liquidsoap', 'radio.liq');
     
@@ -80,72 +90,87 @@ export class LiquidsoapController extends EventEmitter {
       this.emit('liquidsoap_stopped', code);
     });
     
-    this.liquidsoap.on('error', (err) => {
-      console.error('❌ Liquidsoap error:', err);
-      this.emit('liquidsoap_error', err);
-    });
+    // Give Liquidsoap time to fully start and bind ports
+    console.log('⏳ Waiting 5 seconds for Liquidsoap to initialize...');
+    await new Promise(resolve => setTimeout(resolve, 5000));
     
-    // Wait for Liquidsoap to start and telnet to be ready
-    await this.waitForTelnet();
+    // Note: We don't connect to Telnet since it's disabled
+    // Commands will be sent via Harbor HTTP endpoints or other methods
     
-    // Start FFmpeg RTP receiver for AzuraCastOutput
-    this.startRtpReceiver();
+    // Start Harbor PCM stream readers
+    this.startMonitorStream();     // For MediaSoup (DJs hear decks only)
+    this.startBroadcastStream();   // For AzuraCast (Listeners hear decks + mics)
     
     console.log('✅ Liquidsoap started successfully');
     this.emit('ready');
   }
 
   /**
-   * Start FFmpeg RTP receiver
-   * Receives Opus RTP stream from Liquidsoap and outputs PCM
+   * Start Monitor stream (DECKS ONLY - for DJ WebRTC monitoring)
    */
-  startRtpReceiver() {
-    console.log(`📡 Starting RTP receiver on port ${this.rtpPort}...`);
+  startMonitorStream() {
+    console.log(`📡 Connecting to Monitor stream on port ${this.monitorPort}...`);
     
-    // Create SDP file for RTP reception
-    const sdpContent = `v=0
-o=- 0 0 IN IP4 ${this.rtpHost}
-s=Liquidsoap RTP Stream
-c=IN IP4 ${this.rtpHost}
-t=0 0
-m=audio ${this.rtpPort} RTP/AVP 111
-a=rtpmap:111 opus/48000/2
-a=fmtp:111 stereo=1;sprop-stereo=1`;
+    // Fetch PCM stream from Harbor
+    const harborUrl = `http://${this.harborHost}:${this.monitorPort}/monitor`;
     
-    const sdpPath = '/tmp/liquidsoap_rtp.sdp';
-    require('fs').writeFileSync(sdpPath, sdpContent);
-    
-    // FFmpeg: RTP (Opus) → PCM s16le
-    this.ffmpegReceiver = ffmpeg()
-      .input(sdpPath)
-      .inputFormat('sdp')
-      .inputOptions([
-        '-protocol_whitelist', 'file,rtp,udp',
-        '-re'
-      ])
-      .audioCodec('pcm_s16le')
-      .audioChannels(2)
-      .audioFrequency(48000)
-      .format('s16le')
-      .outputOptions(['-ac', '2', '-ar', '48000'])
-      .on('start', (cmd) => {
-        console.log(`🔧 FFmpeg RTP receiver started: ${cmd}`);
-      })
-      .on('error', (err) => {
-        console.error('❌ FFmpeg RTP receiver error:', err.message);
+    const req = http.get(harborUrl, (res) => {
+      console.log(`✅ Connected to Monitor stream: ${harborUrl}`);
+      console.log(`   Status: ${res.statusCode}`);
+      console.log(`   Content-Type: ${res.headers['content-type']}`);
+      
+      // The response stream IS the monitor stream (DECKS ONLY)
+      this.monitorStream = res;
+      
+      res.on('error', (err) => {
+        console.error('❌ Monitor stream error:', err.message);
       });
+    });
     
-    // Get the stream
-    this.broadcastStream = this.ffmpegReceiver.pipe();
-    this.ffmpegReceiver.run();
+    req.on('error', (err) => {
+      console.error('❌ Failed to connect to Monitor stream:', err.message);
+    });
     
-    console.log('✅ RTP receiver started');
+    console.log('✅ Monitor stream started (DECKS ONLY for DJ monitoring)');
   }
 
   /**
-   * Wait for telnet port to be available
+   * Start Broadcast stream (DECKS + MICS - for AzuraCast listeners)
+   */
+  startBroadcastStream() {
+    console.log(`📡 Connecting to Broadcast stream on port ${this.broadcastPort}...`);
+    
+    // Fetch PCM stream from Harbor
+    const harborUrl = `http://${this.harborHost}:${this.broadcastPort}/broadcast`;
+    
+    const req = http.get(harborUrl, (res) => {
+      console.log(`✅ Connected to Broadcast stream: ${harborUrl}`);
+      console.log(`   Status: ${res.statusCode}`);
+      console.log(`   Content-Type: ${res.headers['content-type']}`);
+      
+      // The response stream IS the broadcast stream (DECKS + MICS)
+      this.broadcastStream = res;
+      
+      res.on('error', (err) => {
+        console.error('❌ Broadcast stream error:', err.message);
+      });
+    });
+    
+    req.on('error', (err) => {
+      console.error('❌ Failed to connect to Broadcast stream:', err.message);
+    });
+    
+    console.log('✅ Broadcast stream started (DECKS + MICS for listeners)');
+  }
+
+  /**
+   * Wait for telnet port to be available (DEPRECATED - Telnet disabled)
    */
   async waitForTelnet(maxAttempts = 20, delay = 500) {
+    // Telnet is disabled, so we just skip this
+    console.log('ℹ️  Telnet disabled, skipping connection');
+    return;
+    
     for (let i = 0; i < maxAttempts; i++) {
       try {
         await this.connectTelnet();
@@ -451,18 +476,44 @@ a=fmtp:111 stereo=1;sprop-stereo=1`;
   }
 
   /**
-   * Get RTP connection info for MediaSoup
+   * Get Harbor HTTP stream info for MediaSoup
+   * (Previously RTP, now HTTP Harbor stream)
    */
-  getRtpInfo() {
+  /**
+   * Get monitor stream info (for MediaSoup - DJs hear DECKS ONLY)
+   */
+  getMonitorInfo() {
     return {
-      ip: this.rtpHost,
-      port: this.rtpPort
+      host: this.harborHost,
+      port: this.monitorPort,
+      url: `http://${this.harborHost}:${this.monitorPort}/monitor`,
+      description: 'Monitor stream (DECKS ONLY - no microphones)'
+    };
+  }
+
+  /**
+   * Get monitor stream (for MediaSoup WebRTC)
+   * Returns the PCM/WAV stream from Harbor (DECKS ONLY)
+   */
+  getMonitorStream() {
+    return this.monitorStream;
+  }
+
+  /**
+   * Get broadcast stream info (for AzuraCast - Listeners hear DECKS + MICS)
+   */
+  getBroadcastInfo() {
+    return {
+      host: this.harborHost,
+      port: this.broadcastPort,
+      url: `http://${this.harborHost}:${this.broadcastPort}/broadcast`,
+      description: 'Broadcast stream (DECKS + MICROPHONES)'
     };
   }
 
   /**
    * Get broadcast stream (for AzuraCastOutput)
-   * Returns the PCM stream from FFmpeg RTP receiver
+   * Returns the PCM/WAV stream from Harbor (DECKS + MICS)
    */
   getBroadcastStream() {
     return this.broadcastStream;

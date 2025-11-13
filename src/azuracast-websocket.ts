@@ -41,7 +41,7 @@ export interface AzuraCastNowPlayingData {
   };
 }
 
-export class AzuraCastWebSocketService {
+class AzuraCastWebSocketService {
   private connections = new Map<string, WebSocket>();
   private subscribers = new Map<string, Set<(data: AzuraCastNowPlayingData) => void>>();
   private nowPlayingData = new Map<string, AzuraCastNowPlayingData>();

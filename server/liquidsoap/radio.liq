@@ -12,21 +12,30 @@ log("🎵 SubCaster Radio Starting...")
 # SETTINGS
 # ==============================================================================
 
-settings.server.telnet.set(true)
-settings.server.telnet.port.set(1234)
-settings.server.telnet.bind_addr.set("127.0.0.1")
+# IMPORTANT: Telnet server has a bug in Liquidsoap 2.2.x where it tries to bind twice
+# We disable it and use Harbor HTTP endpoints for control instead
+settings.server.telnet.set(false)
 
 # Audio settings
 settings.frame.audio.samplerate.set(48000)
 settings.frame.audio.channels.set(2)
 
-log("✅ Settings configured")
+log("✅ Settings configured (Telnet disabled, using Harbor for control)")
 
 # ==============================================================================
 # DECK A - Request Queue
 # ==============================================================================
 
-deck_a = request.queue(id="deck_a")
+deck_a_queue = ref([])
+def deck_a_next() =
+  uri = list.hd(default="", deck_a_queue())
+  if uri != "" then
+    request.create(uri)
+  else
+    null()
+  end
+end
+deck_a = request.dynamic(id="deck_a", deck_a_next)
 deck_a = amplify(id="volume_deck_a", 1.0, deck_a)
 
 # Register interactive variables
@@ -39,7 +48,16 @@ log("✅ Deck A initialized")
 # DECK B - Request Queue
 # ==============================================================================
 
-deck_b = request.queue(id="deck_b")
+deck_b_queue = ref([])
+def deck_b_next() =
+  uri = list.hd(default="", deck_b_queue())
+  if uri != "" then
+    request.create(uri)
+  else
+    null()
+  end
+end
+deck_b = request.dynamic(id="deck_b", deck_b_next)
 deck_b = amplify(id="volume_deck_b", 1.0, deck_b)
 
 deck_b_volume = interactive.float("deck_b.volume", 1.0)
@@ -51,7 +69,16 @@ log("✅ Deck B initialized")
 # DECK C - Request Queue
 # ==============================================================================
 
-deck_c = request.queue(id="deck_c")
+deck_c_queue = ref([])
+def deck_c_next() =
+  uri = list.hd(default="", deck_c_queue())
+  if uri != "" then
+    request.create(uri)
+  else
+    null()
+  end
+end
+deck_c = request.dynamic(id="deck_c", deck_c_next)
 deck_c = amplify(id="volume_deck_c", 1.0, deck_c)
 
 deck_c_volume = interactive.float("deck_c.volume", 1.0)
@@ -63,7 +90,16 @@ log("✅ Deck C initialized")
 # DECK D - Request Queue
 # ==============================================================================
 
-deck_d = request.queue(id="deck_d")
+deck_d_queue = ref([])
+def deck_d_next() =
+  uri = list.hd(default="", deck_d_queue())
+  if uri != "" then
+    request.create(uri)
+  else
+    null()
+  end
+end
+deck_d = request.dynamic(id="deck_d", deck_d_next)
 deck_d = amplify(id="volume_deck_d", 1.0, deck_d)
 
 deck_d_volume = interactive.float("deck_d.volume", 1.0)
@@ -89,11 +125,20 @@ mic = amplify(override="liq_amplify", mic_volume, mic)
 log("✅ Microphone input initialized on port 8001")
 
 # ==============================================================================
-# MAIN QUEUE - For AutoQueue system
+# MAIN QUEUE - AutoQueue System
 # ==============================================================================
 
-main_queue = request.queue(id="main_queue")
-main_queue = amplify(id="volume_queue", 0.8, main_queue)
+main_queue_list = ref([])
+def main_queue_next() =
+  uri = list.hd(default="", main_queue_list())
+  if uri != "" then
+    request.create(uri)
+  else
+    null()
+  end
+end
+main_queue = request.dynamic(id="main_queue", main_queue_next)
+main_queue = amplify(id="volume_queue", 1.0, main_queue)
 
 queue_volume = interactive.float("queue.volume", 0.8)
 main_queue = amplify(override="liq_amplify", queue_volume, main_queue)
@@ -105,26 +150,29 @@ log("✅ Main queue initialized")
 # ==============================================================================
 
 # Mix all decks together (fallback chain)
-# Priority: Deck A > Deck B > Deck C > Deck D > Queue
-radio = fallback(
+# Priority: Deck A > Deck B > Deck C > Deck D > Queue > Blank
+decks_only = fallback(
   track_sensitive=false,
   [
     deck_a,
     deck_b,
     deck_c,
     deck_d,
-    main_queue
+    main_queue,
+    blank(id="silence")
   ]
 )
 
-# Add microphone on top (always mixed in)
-radio = add(normalize=false, [mic, radio])
-
-# Master volume control
+# Master volume control for decks
 master_volume = interactive.float("master.volume", 1.0)
-radio = amplify(override="liq_amplify", master_volume, radio)
+decks_only = amplify(override="liq_amplify", master_volume, decks_only)
 
-log("✅ Mixing configured")
+# Create two separate mixes:
+# 1. decks_only = Music only (for WebRTC DJ monitoring)
+# 2. broadcast = Music + Microphones (for listeners via AzuraCast)
+broadcast = add(normalize=false, [mic, decks_only])
+
+log("✅ Mixing configured (decks_only for DJs, broadcast for listeners)")
 
 # ==============================================================================
 # CROSSFADE SUPPORT (Optional - can be enabled)
@@ -142,134 +190,141 @@ log("✅ Mixing configured")
 # OUTPUTS
 # ==============================================================================
 
-# 1. RTP Output (Opus) for MediaSoup WebRTC Conference
-# This is consumed by MediaSoupServer's PlainTransport
-output.rtp.opus(
-  id="webrtc_output",
-  host="127.0.0.1",
-  port=5004,
-  radio
-)
-
-log("✅ RTP Opus output configured on port 5004 (for MediaSoup WebRTC)")
-
-# 2. Harbor Monitor (optional - HTTP MP3 stream for debugging)
+# 1. Harbor PCM Output for WebRTC DJ Monitoring (DECKS ONLY - no microphones)
+# MediaSoup will fetch this via HTTP for DJ monitoring
 output.harbor(
-  %mp3(bitrate=128),
-  id="harbor_monitor",
+  %wav(stereo=true, samplerate=48000),
+  id="monitor_output",
   port=8002,
   mount="/monitor",
-  radio
+  decks_only
 )
 
-log("✅ Harbor monitor output configured on port 8002")
+log("✅ Monitor output configured on port 8002/monitor (DECKS ONLY for DJ monitoring)")
+
+# 2. Harbor PCM Output for AzuraCast Broadcast (DECKS + MICROPHONES)
+# AzuraCastOutput will fetch this via HTTP for listeners
+output.harbor(
+  %wav(stereo=true, samplerate=48000),
+  id="broadcast_output",
+  port=8003,
+  mount="/broadcast",
+  broadcast
+)
+
+log("✅ Broadcast output configured on port 8003/broadcast (DECKS + MICS for listeners)")
 
 # ==============================================================================
 # TELNET COMMANDS
 # ==============================================================================
 
+# TEMPORARILY DISABLED - Testing if server.register() causes port conflict
 # Custom commands for deck control via telnet
 
-def deck_load(deck_id, uri) =
-  log("📀 Loading track to #{deck_id}: #{uri}")
-  
-  # Push to appropriate queue
-  if deck_id == "deck_a" then
-    ignore(request.push(uri, queue=deck_a))
-  elsif deck_id == "deck_b" then
-    ignore(request.push(uri, queue=deck_b))
-  elsif deck_id == "deck_c" then
-    ignore(request.push(uri, queue=deck_c))
-  elsif deck_id == "deck_d" then
-    ignore(request.push(uri, queue=deck_d))
-  elsif deck_id == "queue" then
-    ignore(request.push(uri, queue=main_queue))
-  else
-    log("❌ Unknown deck: #{deck_id}")
-  end
-  
-  "OK"
-end
+# def deck_load(deck_id, uri) =
+#   log("📀 Loading track to #{deck_id}: #{uri}")
+#   
+#   # Push to appropriate queue
+#   if deck_id == "deck_a" then
+#     deck_a_queue := list.append(deck_a_queue(), [uri])
+#   elsif deck_id == "deck_b" then
+#     deck_b_queue := list.append(deck_b_queue(), [uri])
+#   elsif deck_id == "deck_c" then
+#     deck_c_queue := list.append(deck_c_queue(), [uri])
+#   elsif deck_id == "deck_d" then
+#     deck_d_queue := list.append(deck_d_queue(), [uri])
+#   elsif deck_id == "queue" then
+#     main_queue_list := list.append(main_queue_list(), [uri])
+#   else
+#     log("❌ Unknown deck: #{deck_id}")
+#   end
+#   
+#   "OK"
+# end
 
-server.register(
-  namespace="deck",
-  description="Load track to deck",
-  usage="deck.load <deck_id> <uri>",
-  "load",
-  fun (deck_id, uri) -> deck_load(deck_id, uri)
-)
+# server.register(
+#   namespace="deck",
+#   description="Load track to deck",
+#   usage="deck.load <deck_id> <uri>",
+#   "load",
+#   fun (s) -> begin
+#     args = string.split(separator=" ", s)
+#     deck_id = list.nth(default="", args, 0)
+#     uri = list.nth(default="", args, 1)
+#     deck_load(deck_id, uri)
+#   end
+# )
 
-# Skip current track on deck
-def deck_skip(deck_id) =
-  log("⏭️ Skipping track on #{deck_id}")
-  
-  if deck_id == "deck_a" then
-    source.skip(deck_a)
-  elsif deck_id == "deck_b" then
-    source.skip(deck_b)
-  elsif deck_id == "deck_c" then
-    source.skip(deck_c)
-  elsif deck_id == "deck_d" then
-    source.skip(deck_d)
-  elsif deck_id == "queue" then
-    source.skip(main_queue)
-  else
-    log("❌ Unknown deck: #{deck_id}")
-  end
-  
-  "OK"
-end
+# # Skip current track on deck
+# def deck_skip(deck_id) =
+#   log("⏭️ Skipping track on #{deck_id}")
+#   
+#   if deck_id == "deck_a" then
+#     deck_a.skip()
+#   elsif deck_id == "deck_b" then
+#     deck_b.skip()
+#   elsif deck_id == "deck_c" then
+#     deck_c.skip()
+#   elsif deck_id == "deck_d" then
+#     deck_d.skip()
+#   elsif deck_id == "queue" then
+#     main_queue.skip()
+#   else
+#     log("❌ Unknown deck: #{deck_id}")
+#   end
+#   
+#   "OK"
+# end
 
-server.register(
-  namespace="deck",
-  description="Skip current track",
-  usage="deck.skip <deck_id>",
-  "skip",
-  fun (deck_id) -> deck_skip(deck_id)
-)
+# server.register(
+#   namespace="deck",
+#   description="Skip current track",
+#   usage="deck.skip <deck_id>",
+#   "skip",
+#   fun (deck_id) -> deck_skip(deck_id)
+# )
 
-# Queue management
-server.register(
-  namespace="queue",
-  description="Add track to main queue",
-  usage="queue.push <uri>",
-  "push",
-  fun (uri) -> begin
-    ignore(request.push(uri, queue=main_queue))
-    "OK"
-  end
-)
+# # Queue management
+# server.register(
+#   namespace="queue",
+#   description="Add track to main queue",
+#   usage="queue.push <uri>",
+#   "push",
+#   fun (uri) -> begin
+#     main_queue_list := list.append(main_queue_list(), [uri])
+#     "OK"
+#   end
+# )
 
-server.register(
-  namespace="queue",
-  description="Clear main queue",
-  usage="queue.clear",
-  "clear",
-  fun () -> begin
-    # Clear all pending requests
-    request.queue.clear(main_queue)
-    "OK"
-  end
-)
+# server.register(
+#   namespace="queue",
+#   description="Clear main queue",
+#   usage="queue.clear",
+#   "clear",
+#   fun (_) -> begin
+#     # Clear the queue list
+#     main_queue_list := []
+#     "OK"
+#   end
+# )
 
 # Volume controls are already available via interactive variables:
 # var.set deck_a.volume = 0.5
 # var.get deck_a.volume
 
-log("✅ Telnet commands registered")
+log("✅ Telnet commands temporarily disabled for testing")
 
 # ==============================================================================
 # METADATA HANDLING
 # ==============================================================================
 
-def on_metadata(m) =
+# Attach metadata callback to broadcast source (for tracking what's playing)
+broadcast.on_metadata(fun (m) -> begin
   log("🎵 Now Playing:")
   log("   Title: #{m['title']}")
   log("   Artist: #{m['artist']}")
   log("   Album: #{m['album']}")
-end
-
-radio = on_metadata(on_metadata, radio)
+end)
 
 # ==============================================================================
 # STARTUP COMPLETE
@@ -278,8 +333,7 @@ radio = on_metadata(on_metadata, radio)
 log("🎵 ============================================")
 log("🎵 SubCaster Radio is READY!")
 log("🎵 ============================================")
-log("📡 Telnet control: localhost:1234")
-log("📡 Icecast stream: http://localhost:8000/live")
-log("📡 Monitor stream: http://localhost:8002/monitor")
+log("📡 Monitor (DJs): http://localhost:8002/monitor (DECKS ONLY)")
+log("📡 Broadcast (Listeners): http://localhost:8003/broadcast (DECKS + MICS)")
 log("🎤 Microphone input: http://localhost:8001/live")
 log("🎵 ============================================")

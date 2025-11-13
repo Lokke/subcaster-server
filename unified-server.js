@@ -7,12 +7,10 @@ import fs from 'fs/promises';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
 
-// 🎵 Audio Engine Imports
-import { AudioEngine } from './server/AudioEngine.js';
+// 🎵 Audio Server Imports
+import { LiquidsoapController } from './server/LiquidsoapController.js';
 import { CommandServer } from './server/CommandServer.js';
-// AudioStreamServer removed - replaced by MediaSoup WebRTC
 import { MicrophoneServer } from './server/MicrophoneServer.js';
-import { AudioMixer } from './server/AudioMixer.js';
 import { AzuraCastOutput } from './server/AzuraCastOutput.js';
 import MediaSoupServer from './server/MediaSoupServer.js';
 
@@ -1367,56 +1365,42 @@ server.on('upgrade', (request, socket, head) => {
 // 🎵 AUDIO ENGINE INITIALIZATION
 // ============================================================================
 
-let audioEngine;
+// Global audio components
+let liquidsoapController;
 let commandServer;
-// audioStreamServer removed - replaced by MediaSoup WebRTC
 let microphoneServer;
-let audioMixer;
 let azuraCastOutput;
 let mediaSoupServer;
 
 async function initializeAudioEngine() {
     try {
         console.log('\n🎵 ============================================');
-        console.log('🎵 Initializing Server-Side Audio Engine');
+        console.log('🎵 Initializing Liquidsoap Audio System');
         console.log('🎵 ============================================\n');
         
-        // 1. Create Audio Engine (manages 4 decks)
-        audioEngine = new AudioEngine();
-        console.log('✅ AudioEngine created');
+        // 1. Create Liquidsoap Controller (manages 4 decks + mixing)
+        liquidsoapController = new LiquidsoapController();
+        await liquidsoapController.start();
+        console.log('✅ LiquidsoapController started');
         
         // 2. Create Microphone Server (handles WebRTC group calls)
         microphoneServer = new MicrophoneServer(server);
         console.log('✅ MicrophoneServer created');
         
-        // 3. Create Audio Mixer (mixes decks + mics)
-        audioMixer = new AudioMixer(audioEngine, microphoneServer);
-        console.log('✅ AudioMixer created');
-        
-        // 4. Create Command Server (WebSocket API for deck control)
-        commandServer = new CommandServer(server, audioEngine);
+        // 3. Create Command Server (WebSocket API for deck control)
+        commandServer = new CommandServer(server, liquidsoapController);
         console.log('✅ CommandServer created');
         
-        // 5. AudioStreamServer removed - MediaSoup WebRTC handles audio now
-        // Legacy WebSocket PCM streaming replaced by Opus 320kbps via WebRTC
-        console.log('ℹ️  Audio streaming: MediaSoup WebRTC (no legacy AudioStreamServer)');
-        
-        // 6. Create MediaSoup Server (WebRTC conference with Opus 320kbps)
-        mediaSoupServer = new MediaSoupServer(audioEngine, server);
+        // 4. Create MediaSoup Server (WebRTC conference with Opus 320kbps)
+        mediaSoupServer = new MediaSoupServer(liquidsoapController, server);
         await mediaSoupServer.initialize();
         console.log('✅ MediaSoup Server initialized');
         
-        // Connect AudioEngine to MediaSoup via RTP
-        mediaSoupServer.on('audioEngineConnected', ({ ip, port }) => {
-            console.log(`📡 AudioEngine → MediaSoup RTP: ${ip}:${port}`);
-            audioEngine.startRTPOutput(ip, port);
-        });
+        // Connect Liquidsoap RTP to MediaSoup PlainTransport
+        const rtpInfo = liquidsoapController.getRtpInfo();
+        console.log(`📡 Liquidsoap RTP: ${rtpInfo.ip}:${rtpInfo.port} → MediaSoup`);
         
-        // 7. Start audio mixing
-        audioMixer.start();
-        console.log('✅ Audio mixing started');
-        
-        // 8. Create AzuraCast Output (if configured)
+        // 5. Create AzuraCast Output (if configured)
         const azuracastConfig = {
             server: process.env.STREAM_SERVER || 'localhost',
             port: parseInt(process.env.STREAM_PORT || '8000'),
@@ -1431,7 +1415,7 @@ async function initializeAudioEngine() {
             genre: 'Various'
         };
         
-        azuraCastOutput = new AzuraCastOutput(audioMixer, azuracastConfig);
+        azuraCastOutput = new AzuraCastOutput(liquidsoapController, azuracastConfig);
         console.log('✅ AzuraCastOutput created');
         
         // Auto-start streaming if enabled
@@ -1441,17 +1425,21 @@ async function initializeAudioEngine() {
         }
         
         console.log('\n🎵 ============================================');
-        console.log('🎵 Audio Engine Ready!');
+        console.log('🎵 Liquidsoap Audio System Ready!');
         console.log('🎵 ============================================\n');
         console.log('📡 WebSocket Endpoints:');
         console.log(`   Commands:    ws://localhost:${PORT}/ws/commands`);
-        console.log(`   MediaSoup:   ws://localhost:${PORT}/ws/mediasoup (NEW)`);
-        console.log(`   Microphone:  ws://localhost:${PORT}/ws/microphone (legacy)`);
-        console.log('   (AudioStreamServer removed - using MediaSoup WebRTC)');
+        console.log(`   MediaSoup:   ws://localhost:${PORT}/ws/mediasoup`);
+        console.log(`   Microphone:  ws://localhost:${PORT}/ws/microphone`);
+        console.log('');
+        console.log('🎛️  Liquidsoap:');
+        console.log(`   Telnet:      localhost:1235`);
+        console.log(`   RTP Output:  ${rtpInfo.ip}:${rtpInfo.port}`);
+        console.log(`   Harbor Input: localhost:8001/live (for microphones)`);
         console.log('');
         
     } catch (error) {
-        console.error('❌ Failed to initialize Audio Engine:', error);
+        console.error('❌ Failed to initialize Liquidsoap Audio System:', error);
     }
 }
 
@@ -1463,11 +1451,9 @@ process.on('SIGINT', async () => {
         azuraCastOutput.cleanup();
     }
     
-    if (audioMixer) {
-        audioMixer.cleanup();
+    if (liquidsoapController) {
+        await liquidsoapController.stop();
     }
-    
-    // audioStreamServer removed - MediaSoup handles audio
     
     if (microphoneServer) {
         microphoneServer.cleanup();
@@ -1477,8 +1463,8 @@ process.on('SIGINT', async () => {
         await mediaSoupServer.cleanup();
     }
     
-    if (audioEngine) {
-        await audioEngine.cleanup();
+    if (liquidsoapController) {
+        await liquidsoapController.stop();
     }
     
     console.log('✅ Cleanup complete');
@@ -1492,12 +1478,6 @@ process.on('SIGTERM', async () => {
         azuraCastOutput.cleanup();
     }
     
-    if (audioMixer) {
-        audioMixer.cleanup();
-    }
-    
-    // audioStreamServer removed - MediaSoup handles audio
-    
     if (microphoneServer) {
         microphoneServer.cleanup();
     }
@@ -1506,8 +1486,8 @@ process.on('SIGTERM', async () => {
         await mediaSoupServer.cleanup();
     }
     
-    if (audioEngine) {
-        await audioEngine.cleanup();
+    if (liquidsoapController) {
+        await liquidsoapController.stop();
     }
     
     console.log('✅ Cleanup complete');

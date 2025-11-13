@@ -35,7 +35,6 @@
     "concurrently": "^9.2.1",
     "electron": "^28.0.0",
     "electron-builder": "^25.1.8",
-    "http-proxy-middleware": "^3.0.5",
     "knip": "^5.66.2",
     "typescript": "~5.8.3",
     "vite": "^7.1.6"
@@ -47,7 +46,6 @@
     "@ffmpeg-installer/ffmpeg": "^1.1.0",
     "@types/three": "^0.180.0",
     "audio-decode": "^2.2.3",
-    "audiobuffer-to-wav": "^1.0.0",
     "cors": "^2.8.5",
     "dotenv": "^17.2.2",
     "express": "^5.1.0",
@@ -55,11 +53,8 @@
     "mediasoup": "^3.19.9",
     "mediasoup-client": "^3.18.0",
     "node-fetch": "^3.3.2",
-    "pcm-convert": "^1.6.5",
-    "stream-buffers": "^3.0.3",
     "three": "^0.180.0",
-    "ws": "^8.18.3",
-    "wscat": "^6.1.0"
+    "ws": "^8.18.3"
   },
   "main": "electron/main.js"
 }

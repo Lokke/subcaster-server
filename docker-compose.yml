@@ -32,7 +32,8 @@ services:
       - docker-data/.env  # Load from docker-data/.env for runtime
     container_name: subcaster
     ports:
-      - "31337:31337"
+      - "31337:31337"  # HTTP/WebSocket
+      - "40000-49999:40000-49999/udp"  # WebRTC RTP
     environment:
       - NODE_ENV=production
       - PORT=31337

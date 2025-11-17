@@ -20,7 +20,8 @@ services:
     restart: unless-stopped
     
     ports:
-      - "31337:31337"  # Host:Container
+      - "31337:31337"  # HTTP/WebSocket
+      - "40000-49999:40000-49999/udp"  # WebRTC RTP
     
     environment:
       # ============================================

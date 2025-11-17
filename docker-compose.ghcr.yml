@@ -15,7 +15,8 @@ services:
     image: ghcr.io/lokke/subcaster:latest  # Automatisch von GitHub Actions gebaut
     container_name: subcaster
     ports:
-      - "31337:31337"
+      - "31337:31337"  # HTTP/WebSocket
+      - "40000-49999:40000-49999/udp"  # WebRTC RTP
     env_file:
       - .env  # Lädt alle VITE_* Variablen zur Laufzeit
     environment:

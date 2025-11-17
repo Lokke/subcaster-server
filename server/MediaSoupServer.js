@@ -86,10 +86,66 @@ class MediaSoupServer extends EventEmitter {
     }
 
     /**
+     * Get public IP address from external service
+     */
+    async getPublicIp() {
+        try {
+            // Try multiple services for reliability
+            const services = [
+                'https://api.ipify.org',
+                'https://icanhazip.com',
+                'https://ifconfig.me/ip'
+            ];
+
+            for (const service of services) {
+                try {
+                    const response = await fetch(service, { timeout: 3000 });
+                    if (response.ok) {
+                        const ip = (await response.text()).trim();
+                        if (this.isValidIp(ip)) {
+                            console.log(`🌍 Detected public IP for WebRTC: ${ip}`);
+                            return ip;
+                        }
+                    }
+                } catch (err) {
+                    console.warn(`⚠️ Failed to get IP from ${service}:`, err.message);
+                }
+            }
+            
+            throw new Error('All IP detection services failed');
+        } catch (error) {
+            console.error('❌ Failed to detect public IP:', error.message);
+            return null;
+        }
+    }
+
+    /**
+     * Validate IP address format
+     */
+    isValidIp(ip) {
+        const ipv4Regex = /^(\d{1,3}\.){3}\d{1,3}$/;
+        if (!ipv4Regex.test(ip)) return false;
+        
+        const parts = ip.split('.');
+        return parts.every(part => {
+            const num = parseInt(part, 10);
+            return num >= 0 && num <= 255;
+        });
+    }
+
+    /**
      * Initialize MediaSoup Worker and Router
      */
     async initialize() {
         console.log('🎙️ Initializing MediaSoup Server...');
+        
+        // Get announced IP (public IP with fallback to local)
+        if (!this.config.announcedIp) {
+            console.log('🔍 No PUBLIC_IP set, detecting automatically...');
+            const publicIp = await this.getPublicIp();
+            this.config.announcedIp = publicIp || this.getLocalIp();
+        }
+        console.log(`📡 WebRTC will announce IP: ${this.config.announcedIp}`);
         
         // Create worker
         this.worker = await mediasoup.createWorker({

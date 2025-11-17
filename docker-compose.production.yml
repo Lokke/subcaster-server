@@ -20,7 +20,7 @@ services:
     restart: unless-stopped
     
     ports:
-      - "3002:31337"  # Host:Container - Ändere 3002 wenn nötig
+      - "31337:31337"  # Host:Container
     
     environment:
       # ============================================

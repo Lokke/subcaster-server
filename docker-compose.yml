@@ -32,7 +32,7 @@ services:
       - docker-data/.env  # Load from docker-data/.env for runtime
     container_name: subcaster
     ports:
-      - "3002:31337"
+      - "31337:31337"
     environment:
       - NODE_ENV=production
       - PORT=31337

@@ -15,7 +15,7 @@ services:
     image: ghcr.io/lokke/subcaster:latest  # Automatisch von GitHub Actions gebaut
     container_name: subcaster
     ports:
-      - "3002:31337"
+      - "31337:31337"
     env_file:
       - .env  # Lädt alle VITE_* Variablen zur Laufzeit
     environment:

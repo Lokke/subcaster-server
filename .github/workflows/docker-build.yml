@@ -9,7 +9,7 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository_owner }}/subcaster
+  IMAGE_NAME: ${{ github.repository_owner }}/subcaster-server
 
 jobs:
   build-and-push:
@@ -40,7 +40,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.REGISTRY }}/${{ steps.repo_owner.outputs.owner }}/subcaster
+          images: ${{ env.REGISTRY }}/${{ steps.repo_owner.outputs.owner }}/subcaster-server
           tags: |
             type=ref,event=branch
             type=sha,prefix={{branch}}-
@@ -59,8 +59,8 @@ jobs:
             GIT_COMMIT=${{ github.sha }}
             BUILD_DATE=${{ github.event.head_commit.timestamp }}
             VERSION=${{ github.ref_name }}-${{ github.sha }}
-          cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ steps.repo_owner.outputs.owner }}/subcaster:buildcache
-          cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ steps.repo_owner.outputs.owner }}/subcaster:buildcache,mode=max
+          cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ steps.repo_owner.outputs.owner }}/subcaster-server:buildcache
+          cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ steps.repo_owner.outputs.owner }}/subcaster-server:buildcache,mode=max
 
       - name: Output image tags
         run: |

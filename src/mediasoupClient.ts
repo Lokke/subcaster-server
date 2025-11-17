@@ -327,11 +327,11 @@ export class MediaSoupClient {
         });
         
         // Monitor ICE connection state
-        this.recvTransport.on('connectionstatechange', (state) => {
+        this.recvTransport.on('connectionstatechange', (state: string) => {
             console.log(`🔌 Receive transport connection state: ${state}`);
         });
 
-        this.recvTransport.on('icegatheringstatechange', (state) => {
+        this.recvTransport.on('icegatheringstatechange', (state: string) => {
             console.log(`📡 Receive transport ICE gathering: ${state}`);
         });
         
@@ -564,11 +564,11 @@ export class MediaSoupClient {
         });
         
         // Monitor ICE connection state
-        this.sendTransport.on('connectionstatechange', (state) => {
+        this.sendTransport.on('connectionstatechange', (state: string) => {
             console.log(`🔌 Send transport connection state: ${state}`);
         });
 
-        this.sendTransport.on('icegatheringstatechange', (state) => {
+        this.sendTransport.on('icegatheringstatechange', (state: string) => {
             console.log(`📡 Send transport ICE gathering: ${state}`);
         });
         

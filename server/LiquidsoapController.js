@@ -518,4 +518,25 @@ export class LiquidsoapController extends EventEmitter {
   getBroadcastStream() {
     return this.broadcastStream;
   }
+
+  /**
+   * Get all states (for CommandServer compatibility)
+   * Returns deck states, queue, and volume information
+   */
+  getAllStates() {
+    return {
+      decks: this.deckStates,
+      queue: this.queue,
+      masterVolume: this.masterVolume,
+      microphoneVolume: this.microphoneVolume
+    };
+  }
+
+  /**
+   * Get RTP info (legacy compatibility - Harbor replaces RTP)
+   * Returns monitor stream info instead
+   */
+  getRtpInfo() {
+    return this.getMonitorInfo();
+  }
 }

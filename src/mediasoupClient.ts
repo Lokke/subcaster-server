@@ -23,6 +23,12 @@ interface ParticipantStream {
     label: string;
 }
 
+interface Participant {
+    id: string;
+    username: string;
+    hasAudio: boolean;
+}
+
 export class MediaSoupClient {
     private ws: WebSocket | null = null;
     private device: Device | null = null;
@@ -34,6 +40,9 @@ export class MediaSoupClient {
     
     // Streams: 'music' or participantId → ParticipantStream
     private streams: Map<string, ParticipantStream> = new Map();
+    
+    // All participants (including those without audio like Echo User)
+    private participants: Map<string, Participant> = new Map();
     
     private audioContext: AudioContext;
     private masterGain: GainNode;
@@ -52,6 +61,13 @@ export class MediaSoupClient {
      */
     public getStreams(): Map<string, ParticipantStream> {
         return this.streams;
+    }
+    
+    /**
+     * Get all participants (including those without audio)
+     */
+    public getParticipants(): Map<string, Participant> {
+        return this.participants;
     }
     
     constructor(serverUrl: string = 'ws://localhost:3004') {
@@ -191,6 +207,17 @@ export class MediaSoupClient {
             
             case 'transportCreated':
                 console.log('[CONFERENCE] 🚚 Transport created, setting up...');
+                
+                // Store our own client ID and add ourselves to participants
+                if (data.clientId) {
+                    this.participants.set(data.clientId, {
+                        id: data.clientId,
+                        username: data.username || 'You',
+                        hasAudio: false
+                    });
+                    console.log(`[CONFERENCE] 👤 Registered self as participant: ${data.clientId}`);
+                }
+                
                 await this.createTransports(data);
                 break;
             
@@ -235,6 +262,46 @@ export class MediaSoupClient {
                 console.log('[CONFERENCE] 🚪 Consumer closed:', data.consumerId);
                 this.closeConsumer(data.consumerId);
                 break;
+            
+            case 'existingParticipants':
+                console.log('[CONFERENCE] 👥 Received existing participants:', data.participants);
+                // Add existing participants to our list (including Echo User)
+                for (const participant of data.participants) {
+                    console.log(`[CONFERENCE] 👤 Existing participant: ${participant.username} (${participant.id})`);
+                    this.participants.set(participant.id, {
+                        id: participant.id,
+                        username: participant.username,
+                        hasAudio: participant.hasAudio || false
+                    });
+                    if (this.onParticipantJoined) {
+                        this.onParticipantJoined(participant.id, false);
+                    }
+                }
+                break;
+            
+            case 'participantJoined':
+                console.log('[CONFERENCE] 👋 Participant joined:', data.username, data.participantId);
+                this.participants.set(data.participantId, {
+                    id: data.participantId,
+                    username: data.username,
+                    hasAudio: false
+                });
+                if (this.onParticipantJoined) {
+                    this.onParticipantJoined(data.participantId, false);
+                }
+                break;
+            
+            case 'participantMicStatus':
+                console.log('[CONFERENCE] 🎤 Participant mic status changed:', data.participantId, data.micActive);
+                const participant = this.participants.get(data.participantId);
+                if (participant) {
+                    participant.hasAudio = data.micActive;
+                    // Trigger UI update
+                    if (this.onParticipantJoined) {
+                        this.onParticipantJoined(data.participantId, false);
+                    }
+                }
+                break;
                 
             default:
                 console.log('[CONFERENCE] 📨 Unknown message:', data);
@@ -245,12 +312,27 @@ export class MediaSoupClient {
      * Create send and receive transports
      */
     private async createTransports(data: any): Promise<void> {
+        // Log ICE candidates from server
+        console.log('🔌 Receive Transport ICE Candidates:');
+        data.iceCandidates.forEach((candidate: any) => {
+            console.log(`   ${candidate.ip}:${candidate.port} (${candidate.protocol}, ${candidate.type})`);
+        });
+        
         // Receive Transport (for music + other users)
         this.recvTransport = this.device!.createRecvTransport({
             id: data.transportId,
             iceParameters: data.iceParameters,
             iceCandidates: data.iceCandidates,
             dtlsParameters: data.dtlsParameters
+        });
+        
+        // Monitor ICE connection state
+        this.recvTransport.on('connectionstatechange', (state) => {
+            console.log(`🔌 Receive transport connection state: ${state}`);
+        });
+
+        this.recvTransport.on('icegatheringstatechange', (state) => {
+            console.log(`📡 Receive transport ICE gathering: ${state}`);
         });
         
         this.recvTransport.on('connect', ({ dtlsParameters }: any, callback: any, errback: any) => {
@@ -303,6 +385,13 @@ export class MediaSoupClient {
         
         console.log('[CONFERENCE] 🔊 Audio element created, autoplay:', audioElement.autoplay);
         
+        // Resume AudioContext if suspended (browser autoplay policy)
+        if (this.audioContext.state === 'suspended') {
+            console.log('[CONFERENCE] ⚠️ AudioContext suspended, resuming...');
+            await this.audioContext.resume();
+            console.log('[CONFERENCE] ✅ AudioContext resumed:', this.audioContext.state);
+        }
+        
         // Create gain node for volume control
         const source = this.audioContext.createMediaStreamSource(stream);
         const gainNode = this.audioContext.createGain();
@@ -312,8 +401,8 @@ export class MediaSoupClient {
         source.connect(gainNode);
         gainNode.connect(isMusicStream ? this.musicGain : this.voicesGain);
         
-        // Store stream
-        const streamId = isMusicStream ? 'music' : data.producerId;
+        // Store stream (use participantId if available, fallback to producerId for music)
+        const streamId = isMusicStream ? 'music' : (data.participantId || data.producerId);
         this.streams.set(streamId, {
             consumerId: data.consumerId,
             stream,
@@ -321,6 +410,15 @@ export class MediaSoupClient {
             gainNode,
             label: data.label
         });
+        
+        // Update participants map - mark this participant as having audio
+        if (!isMusicStream && data.participantId) {
+            const participant = this.participants.get(data.participantId);
+            if (participant) {
+                participant.hasAudio = true;
+                console.log(`[CONFERENCE] ✅ Updated participant ${data.participantId} hasAudio = true`);
+            }
+        }
         
         console.log('[CONFERENCE] 🎧 Stream stored:', {
             streamId,
@@ -409,6 +507,8 @@ export class MediaSoupClient {
             return;
         }
         
+        console.log('🎤 Requesting microphone access...');
+        
         // Get user media
         const stream = await navigator.mediaDevices.getUserMedia({
             audio: {
@@ -419,7 +519,10 @@ export class MediaSoupClient {
             }
         });
         
+        console.log('✅ Microphone access granted');
+        
         const audioTrack = stream.getAudioTracks()[0];
+        console.log(`🎤 Audio track: ${audioTrack.label}, enabled: ${audioTrack.enabled}, muted: ${audioTrack.muted}, readyState: ${audioTrack.readyState}`);
         
         // Create send transport if not exists
         if (!this.sendTransport) {
@@ -437,18 +540,36 @@ export class MediaSoupClient {
             }
         });
         
-        console.log('🎤 Microphone enabled');
+        console.log(`🎤 Microphone producer created: ${this.micProducer.id}`);
+        console.log(`   Track: ${this.micProducer.track?.label}`);
+        console.log(`   Paused: ${this.micProducer.paused}`);
+        console.log(`   Closed: ${this.micProducer.closed}`);
     }
 
     /**
      * Setup send transport when server creates it
      */
     private async setupSendTransport(data: any): Promise<void> {
+        // Log ICE candidates from server
+        console.log('🔌 Send Transport ICE Candidates:');
+        data.iceCandidates.forEach((candidate: any) => {
+            console.log(`   ${candidate.ip}:${candidate.port} (${candidate.protocol}, ${candidate.type})`);
+        });
+        
         this.sendTransport = this.device!.createSendTransport({
             id: data.transportId,
             iceParameters: data.iceParameters,
             iceCandidates: data.iceCandidates,
             dtlsParameters: data.dtlsParameters
+        });
+        
+        // Monitor ICE connection state
+        this.sendTransport.on('connectionstatechange', (state) => {
+            console.log(`🔌 Send transport connection state: ${state}`);
+        });
+
+        this.sendTransport.on('icegatheringstatechange', (state) => {
+            console.log(`📡 Send transport ICE gathering: ${state}`);
         });
         
         this.sendTransport.on('connect', ({ dtlsParameters }: any, callback: any, errback: any) => {

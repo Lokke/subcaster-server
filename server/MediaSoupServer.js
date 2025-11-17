@@ -17,6 +17,7 @@
 import * as mediasoup from 'mediasoup';
 import { EventEmitter } from 'events';
 import { WebSocketServer } from 'ws';
+import { networkInterfaces } from 'os';
 
 class MediaSoupServer extends EventEmitter {
     constructor(audioEngine, httpServer) {
@@ -41,7 +42,7 @@ class MediaSoupServer extends EventEmitter {
         this.config = {
             listenIp: '0.0.0.0',
             listenPort: 3004,
-            announcedIp: null, // Auto-detect
+            announcedIp: this.getLocalIp(), // Use local network IP instead of null
             
             // Opus codec settings
             mediaCodecs: [
@@ -60,6 +61,27 @@ class MediaSoupServer extends EventEmitter {
                 }
             ]
         };
+    }
+    
+    /**
+     * Get local network IP address
+     */
+    getLocalIp() {
+        const nets = networkInterfaces();
+        
+        for (const name of Object.keys(nets)) {
+            for (const net of nets[name]) {
+                // Skip internal (loopback) and non-IPv4 addresses
+                if (net.family === 'IPv4' && !net.internal) {
+                    const detectedIp = net.address;
+                    console.log(`🌐 Detected local IP for WebRTC: ${detectedIp} (interface: ${name})`);
+                    return detectedIp;
+                }
+            }
+        }
+        
+        console.warn('⚠️ Could not detect local IP, using localhost');
+        return '127.0.0.1';
     }
 
     /**
@@ -151,7 +173,8 @@ class MediaSoupServer extends EventEmitter {
                 producer: null,
                 consumers: new Map(),
                 micButtonActive: false,
-                rtpCapabilities: null
+                rtpCapabilities: null,
+                username: `User ${clientId.split('_')[2]}` // Simple username from timestamp
             });
         } else if (!this.participants.get(clientId).ws) {
             // Update ws reference if participant was created early (shouldn't happen now)
@@ -268,6 +291,17 @@ class MediaSoupServer extends EventEmitter {
             initialAvailableOutgoingBitrate: 600000
         });
         
+        // Log ICE connection events
+        transport.on('icestatechange', (iceState) => {
+            console.log(`🔌 Transport ${transport.id} ICE state: ${iceState}`);
+        });
+
+        transport.on('iceselectedtuplechange', (tuple) => {
+            console.log(`✅ Transport ${transport.id} ICE candidate selected:`);
+            console.log(`   Local:  ${tuple.localIp}:${tuple.localPort} (${tuple.protocol})`);
+            console.log(`   Remote: ${tuple.remoteIp}:${tuple.remotePort}`);
+        });
+        
         console.log(`[MEDIASOUP-SERVER] ✅ Recv transport created:`, transport.id);
 
         // Store participant
@@ -280,14 +314,21 @@ class MediaSoupServer extends EventEmitter {
                 producer: null,
                 consumers: new Map(),
                 micButtonActive: false,
-                rtpCapabilities: null
+                rtpCapabilities: null,
+                username: `User ${clientId.split('_')[2]}` // Use timestamp part as simple username
             });
         } else {
             console.log(`[MEDIASOUP-SERVER] 🔄 Updating existing participant with ws and recvTransport`);
             const participant = this.participants.get(clientId);
             participant.ws = ws;  // Add ws reference if it was created early
             participant.recvTransport = transport;
+            if (!participant.username) {
+                participant.username = `User ${clientId.split('_')[2]}`;
+            }
         }
+
+        // Get participant info for messages
+        const participant = this.participants.get(clientId);
 
         // Send transport info to client
         ws.send(JSON.stringify({
@@ -295,10 +336,44 @@ class MediaSoupServer extends EventEmitter {
             transportId: transport.id,
             iceParameters: transport.iceParameters,
             iceCandidates: transport.iceCandidates,
-            dtlsParameters: transport.dtlsParameters
+            dtlsParameters: transport.dtlsParameters,
+            clientId: clientId, // Send client their own ID
+            username: participant.username || `User ${clientId}`
         }));
         
-        console.log(`[MEDIASOUP-SERVER] 📤 Sent transportCreated to client`);
+        // Send list of all existing participants (including Echo User)
+        const participantsList = [];
+        for (const [participantId, p] of this.participants.entries()) {
+            if (participantId !== clientId && p.username) {
+                participantsList.push({
+                    id: participantId,
+                    username: p.username,
+                    hasAudio: participantId === 'echo-test-user' || !!p.producer // Echo User always has "mic"
+                });
+            }
+        }
+        
+        if (participantsList.length > 0) {
+            console.log(`[MEDIASOUP-SERVER] 📋 Sending ${participantsList.length} existing participants to ${clientId}`);
+            ws.send(JSON.stringify({
+                type: 'existingParticipants',
+                participants: participantsList
+            }));
+        }
+        
+        // Notify all OTHER clients that this new client joined (without mic yet)
+        for (const [peerId, peer] of this.participants.entries()) {
+            if (peerId === clientId || !peer.ws) continue;
+            
+            peer.ws.send(JSON.stringify({
+                type: 'participantJoined',
+                participantId: clientId,
+                username: participant.username || `User ${clientId}`
+            }));
+        }
+        console.log(`[MEDIASOUP-SERVER] 📢 Notified other clients about new participant ${clientId}`);
+        
+        console.log(`[MEDIASOUP-SERVER] ✅ Client ${clientId} joined, recvTransport: ${transport.id}`);
 
         // Subscribe to music producer
         console.log(`[MEDIASOUP-SERVER] 🎵 Attempting to subscribe to music (rtpCapabilities may not be set yet)...`);
@@ -387,28 +462,37 @@ class MediaSoupServer extends EventEmitter {
      * Subscribe client to all other participants
      */
     async subscribeToAllParticipants(clientId) {
+        console.log(`[MEDIASOUP-SERVER] 👥 Subscribing to other participants...`);
         const participant = this.participants.get(clientId);
         if (!participant || !participant.rtpCapabilities) return;
 
         for (const [peerId, peer] of this.participants) {
-            if (peerId === clientId || !peer.producer) continue;
+            // Skip self, participants without producer, and Echo User (no ws/recvTransport)
+            if (peerId === clientId || !peer.producer || !peer.ws) continue;
 
-            const consumer = await participant.recvTransport.consume({
-                producerId: peer.producer.id,
-                rtpCapabilities: participant.rtpCapabilities,
-                paused: false
-            });
+            try {
+                const consumer = await participant.recvTransport.consume({
+                    producerId: peer.producer.id,
+                    rtpCapabilities: participant.rtpCapabilities,
+                    paused: false
+                });
 
-            participant.consumers.set(peerId, consumer);
+                participant.consumers.set(peerId, consumer);
 
-            participant.ws.send(JSON.stringify({
-                type: 'newConsumer',
-                consumerId: consumer.id,
-                producerId: peer.producer.id,
-                kind: 'audio',
-                rtpParameters: consumer.rtpParameters,
-                label: `User ${peerId}`
-            }));
+                participant.ws.send(JSON.stringify({
+                    type: 'newConsumer',
+                    consumerId: consumer.id,
+                    producerId: peer.producer.id,
+                    participantId: peerId,
+                    kind: 'audio',
+                    rtpParameters: consumer.rtpParameters,
+                    label: peer.username || `User ${peerId}`
+                }));
+                
+                console.log(`[MEDIASOUP-SERVER] ✅ Subscribed ${clientId} to ${peerId}`);
+            } catch (error) {
+                console.error(`[MEDIASOUP-SERVER] ❌ Failed to consume from ${peerId}:`, error.message);
+            }
         }
     }
 
@@ -454,6 +538,9 @@ class MediaSoupServer extends EventEmitter {
         });
 
         console.log(`🎤 Client ${clientId} microphone enabled`);
+        
+        // Emit event for Echo User and other server-side consumers
+        this.emit('producerCreated', clientId, participant.producer);
 
         // Send producer ID back to client
         ws.send(JSON.stringify({
@@ -461,9 +548,9 @@ class MediaSoupServer extends EventEmitter {
             producerId: participant.producer.id
         }));
 
-        // Broadcast to all other participants
+        // Broadcast to all other participants (skip if no WebSocket - e.g., Echo User)
         for (const [peerId, peer] of this.participants) {
-            if (peerId === clientId || !peer.rtpCapabilities) continue;
+            if (peerId === clientId || !peer.rtpCapabilities || !peer.ws) continue;
 
             const consumer = await peer.recvTransport.consume({
                 producerId: participant.producer.id,
@@ -477,9 +564,21 @@ class MediaSoupServer extends EventEmitter {
                 type: 'newConsumer',
                 consumerId: consumer.id,
                 producerId: participant.producer.id,
+                participantId: clientId,
                 kind: 'audio',
                 rtpParameters: consumer.rtpParameters,
-                label: `User ${clientId}`
+                label: participant.username || `User ${clientId}`
+            }));
+        }
+        
+        // Notify all clients that this participant joined (with mic)
+        for (const [peerId, peer] of this.participants) {
+            if (peerId === clientId || !peer.ws) continue;
+            
+            peer.ws.send(JSON.stringify({
+                type: 'participantJoined',
+                participantId: clientId,
+                username: participant.username || `User ${clientId}`
             }));
         }
 
@@ -499,6 +598,18 @@ class MediaSoupServer extends EventEmitter {
         participant.micButtonActive = active;
 
         console.log(`📡 Client ${clientId} AzuraCast forwarding: ${active ? 'ON' : 'OFF'}`);
+        
+        // Broadcast mic status change to all other participants
+        for (const [peerId, peer] of this.participants.entries()) {
+            if (peerId === clientId || !peer.ws) continue;
+            
+            peer.ws.send(JSON.stringify({
+                type: 'participantMicStatus',
+                participantId: clientId,
+                micActive: active
+            }));
+        }
+        console.log(`[MEDIASOUP-SERVER] 📢 Broadcasted mic status change for ${clientId}: ${active}`);
 
         // Enable/disable forwarding to AzuraCast
         this.forwardToAzuraCast(clientId, active);

@@ -987,25 +987,48 @@ function updateConferenceParticipants(): void {
     return;
   }
   
-  // Get all participants from MediaSoupClient using public method
+  // Get all participants (including Echo User without audio)
+  const participants = mediaSoupClient.getParticipants();
+  // Get audio streams
   const streams = mediaSoupClient.getStreams();
-  console.log('[WEBRTC-CLIENT] 📊 Active streams:', {
-    count: streams.size,
-    streamIds: Array.from(streams.keys()),
-    streamDetails: Array.from(streams.entries()).map(([id, info]) => ({
-      id,
-      label: info.label,
-      hasAudio: !!info.audioElement,
-      hasGain: !!info.gainNode
-    }))
+  
+  console.log('[WEBRTC-CLIENT] 📊 Participants and streams:', {
+    participantCount: participants.size,
+    streamCount: streams.size,
+    participants: Array.from(participants.entries()).map(([id, p]) => ({ id, username: p.username, hasAudio: p.hasAudio })),
+    streams: Array.from(streams.keys())
   });
   
   // Clear container
   participantsContainer.innerHTML = '';
   
+  // Combine participants and streams
+  const allParticipants = new Map<string, { username: string, hasAudio: boolean }>();
+  
+  // Add all registered participants
+  participants.forEach((participant, id) => {
+    allParticipants.set(id, {
+      username: participant.username,
+      hasAudio: streams.has(id)
+    });
+  });
+  
+  // Add any streams that aren't in participants (like server music)
+  streams.forEach((streamInfo, streamId) => {
+    if (!allParticipants.has(streamId)) {
+      allParticipants.set(streamId, {
+        username: streamInfo.label || 'Unknown',
+        hasAudio: true
+      });
+    } else {
+      // Update hasAudio status
+      allParticipants.get(streamId)!.hasAudio = true;
+    }
+  });
+  
   // Check if empty
-  if (streams.size === 0) {
-    console.log('[WEBRTC-CLIENT] ⚠️ No streams available, showing empty state');
+  if (allParticipants.size === 0) {
+    console.log('[WEBRTC-CLIENT] ⚠️ No participants, showing empty state');
     participantsContainer.innerHTML = `
       <div class="conference-empty">
         <span class="material-icons">person_off</span>
@@ -1015,32 +1038,34 @@ function updateConferenceParticipants(): void {
     return;
   }
   
-  console.log('[WEBRTC-CLIENT] ✅ Rendering', streams.size, 'participants');
+  console.log('[WEBRTC-CLIENT] ✅ Rendering', allParticipants.size, 'participants');
   
   // Add each participant
-  streams.forEach((streamInfo, streamId) => {
-    const isMusicStream = streamId === 'music';
-    const isCurrentUser = streamId === 'self'; // TODO: Implement self-detection
+  allParticipants.forEach((info, participantId) => {
+    const isMusicStream = participantId === 'music';
+    const isCurrentUser = participantId === 'self'; // TODO: Implement self-detection
     
     console.log('[WEBRTC-CLIENT] 👤 Adding participant:', { 
-      streamId, 
-      label: streamInfo.label, 
+      participantId, 
+      username: info.username, 
+      hasAudio: info.hasAudio,
       isMusic: isMusicStream 
     });
     
     const participantEl = document.createElement('div');
     participantEl.className = 'conference-participant';
-    participantEl.dataset.participantId = streamId;
+    participantEl.dataset.participantId = participantId;
     
     // Use different icon for server music vs users
-    const icon = isMusicStream ? 'music_note' : 'person';
-    const displayName = streamInfo.label || 'Unknown';
+    const icon = isMusicStream ? 'music_note' : (info.hasAudio ? 'person' : 'person_outline');
+    const displayName = info.username;
     const nameTag = isCurrentUser ? `${displayName} (You)` : displayName;
+    const micStatus = info.hasAudio ? 'mic' : 'mic_off';
     
     participantEl.innerHTML = `
       <span class="material-icons participant-icon">${icon}</span>
       <span class="participant-name">${nameTag}</span>
-      <span class="material-icons participant-status">mic</span>
+      <span class="material-icons participant-status">${micStatus}</span>
       <div class="participant-meter">
         <div class="participant-meter-fill"></div>
       </div>

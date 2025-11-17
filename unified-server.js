@@ -13,6 +13,7 @@ import { CommandServer } from './server/CommandServer.js';
 import { MicrophoneServer } from './server/MicrophoneServer.js';
 import { AzuraCastOutput } from './server/AzuraCastOutput.js';
 import MediaSoupServer from './server/MediaSoupServer.js';
+import { createEchoUser } from './server/debug-echo-user.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -1396,9 +1397,10 @@ async function initializeAudioEngine() {
         await mediaSoupServer.initialize();
         console.log('✅ MediaSoup Server initialized');
         
-        // Connect Liquidsoap RTP to MediaSoup PlainTransport
-        const rtpInfo = liquidsoapController.getRtpInfo();
-        console.log(`📡 Liquidsoap RTP: ${rtpInfo.ip}:${rtpInfo.port} → MediaSoup`);
+        // Note: MediaSoup will consume Harbor monitor stream (port 8002) for DJ monitoring
+        // DJs hear DECKS ONLY (no microphones) to prevent echo
+        const monitorInfo = liquidsoapController.getMonitorInfo();
+        console.log(`📡 Monitor stream available: ${monitorInfo.url} (${monitorInfo.description})`);
         
         // 5. Create AzuraCast Output (if configured)
         const azuracastConfig = {
@@ -1432,11 +1434,23 @@ async function initializeAudioEngine() {
         console.log(`   MediaSoup:   ws://localhost:${PORT}/ws/mediasoup`);
         console.log(`   Microphone:  ws://localhost:${PORT}/ws/microphone`);
         console.log('');
-        console.log('🎛️  Liquidsoap:');
-        console.log(`   Telnet:      localhost:1235`);
-        console.log(`   RTP Output:  ${rtpInfo.ip}:${rtpInfo.port}`);
-        console.log(`   Harbor Input: localhost:8001/live (for microphones)`);
+        console.log('🎛️  Liquidsoap Harbor Streams:');
+        console.log(`   Monitor:     http://localhost:8002/monitor (DECKS ONLY - for DJs)`);
+        console.log(`   Broadcast:   http://localhost:8003/broadcast (DECKS + MICS - for listeners)`);
+        console.log(`   Mic Input:   http://localhost:8001/live (microphones from WebRTC)`);
         console.log('');
+        
+        // 🔊 Start Debug Echo User (if enabled)
+        if (process.env.DEBUG_ECHO_USER === 'true') {
+            console.log('🔊 Starting Debug Echo User...');
+            try {
+                const echoUser = await createEchoUser(mediaSoupServer);
+                console.log('✅ Debug Echo User joined conference');
+                console.log('   This user will echo back all received audio for testing');
+            } catch (error) {
+                console.error('❌ Failed to start Debug Echo User:', error);
+            }
+        }
         
     } catch (error) {
         console.error('❌ Failed to initialize Liquidsoap Audio System:', error);

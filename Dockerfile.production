@@ -63,6 +63,7 @@ COPY --from=builder /app/node_modules ./node_modules
 # Build-Artefakte kopieren
 COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/unified-server.js ./
+COPY --from=builder /app/server ./server
 
 # Non-root User erstellen  
 RUN groupadd -g 1001 nodejs && \

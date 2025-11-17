@@ -32,9 +32,12 @@ services:
       - NODE_ENV=production
       - PORT=31337
       - DOCKER_ENV=true
+      # ⚠️ WICHTIG: Setze deine öffentliche Server-IP für WebRTC
+      # - PUBLIC_IP=your.public.ip.here
     
     volumes:
       - ./docker-data:/app/docker-data
+      - ./waveform-cache:/app/waveform-cache
     
     labels:
       # Watchtower wird diesen Container automatisch updaten

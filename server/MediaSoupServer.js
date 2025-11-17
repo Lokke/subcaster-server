@@ -42,7 +42,8 @@ class MediaSoupServer extends EventEmitter {
         this.config = {
             listenIp: '0.0.0.0',
             listenPort: 3004,
-            announcedIp: this.getLocalIp(), // Use local network IP instead of null
+            // Use public IP from env, fallback to detected local IP
+            announcedIp: process.env.PUBLIC_IP || this.getLocalIp(),
             
             // Opus codec settings
             mediaCodecs: [

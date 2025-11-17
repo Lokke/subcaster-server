@@ -15,8 +15,8 @@ version: '3.8'
 
 services:
   subcaster:
-    image: ghcr.io/lokke/subcaster:latest
-    container_name: subcaster
+    image: ghcr.io/lokke/subcaster-server:latest
+    container_name: subcaster-server
     restart: unless-stopped
     
     ports:
@@ -37,8 +37,8 @@ services:
       # ============================================
       - VITE_USE_UNIFIED_LOGIN=true
       # ❌ Server-only Secrets (nicht in Browser sichtbar)
-      - UNIFIED_USERNAME=your_unified_username
-      - UNIFIED_PASSWORD=your_unified_password
+      - UNIFIED_USERNAME=
+      - UNIFIED_PASSWORD=
       
       # ============================================
       # DISCORD WISHBOX
@@ -68,65 +68,60 @@ services:
       - VITE_AZURACAST_STATION_ID=1
       
       # ❌ Server-only Secrets
-      - AZURACAST_DJ_USERNAME=your_dj_username
-      - AZURACAST_DJ_PASSWORD=your_dj_password
+      - AZURACAST_DJ_USERNAME=
+      - AZURACAST_DJ_PASSWORD=
       
       # ============================================
       # STREAMING CONFIGURATION
       # ============================================
-      # ✅ Public Settings
       - VITE_STREAM_BITRATE=128
       - VITE_STREAM_SAMPLE_RATE=44100
-      
-      # ❌ Server-only Secrets
-      - STREAM_SERVER=your_stream_server
+      - STREAM_SERVER=
       - STREAM_PORT=8000
-      - STREAM_USERNAME=your_stream_username
-      - STREAM_PASSWORD=your_stream_password
+      - STREAM_USERNAME=
+      - STREAM_PASSWORD=
       
       # ============================================
       # DECK CONFIGURATION
       # ============================================
-      # ✅ Public Config
       - VITE_DECK_CONFIGURATION=four-decks
       
       # ============================================
       # GENRE BLACKLIST
       # ============================================
-      # ✅ Public Config
       - VITE_BLACKLISTED_GENRES=RAC,RAC!,RECHTSROCK,RECHTS-ROCK,ROCK AGAINST COMMUNISM,NSBM,NATIONALSOZIALISTISCHER BLACK METAL,WHITE POWER,WHITE-POWER
     
     volumes:
-      # Persistente Daten (optional)
       - ./docker-data:/app/docker-data
     
+    labels:
+      # Watchtower wird diesen Container automatisch updaten
+      - "com.centurylinklabs.watchtower.enable=true"
+    
     healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3001/health"]
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:31337/health"]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 40s
-    
-    networks:
-      - subcaster-network
 
-networks:
-  subcaster-network:
-    driver: bridge
-
-# ============================================
-# WICHTIG: ENV-Variablen anpassen!
-# ============================================
-# Ersetze alle "your_*" Platzhalter mit echten Werten:
-# - your_unified_username
-# - your_unified_password
-# - your_opensubsonic_username
-# - your_opensubsonic_password
-# - your_dj_username
-# - your_dj_password
-# - your_stream_server
-# - your_stream_username
-# - your_stream_password
-#
-# ODER: Verwende eine .env Datei und referenziere mit ${VARIABLE}
-# ============================================
+#  # Watchtower - Automatisches Update-System
+#  watchtower:
+#    image: containrrr/watchtower:latest
+#    container_name: subcaster-watchtower
+#    restart: unless-stopped
+#    volumes:
+#      - /var/run/docker.sock:/var/run/docker.sock
+#    environment:
+#      # Prüfe alle 5 Minuten auf neue Images
+#      - WATCHTOWER_POLL_INTERVAL=20
+#      # Nur Container mit Label updaten
+#      - WATCHTOWER_LABEL_ENABLE=true
+#      # Cleanup alte Images
+#      - WATCHTOWER_CLEANUP=true
+#      # Logs aktivieren
+#      - WATCHTOWER_DEBUG=false
+#      - WATCHTOWER_NOTIFICATIONS=shoutrrr
+#      # Optional: Notification URL (z.B. Discord Webhook)
+#      # - WATCHTOWER_NOTIFICATION_URL=discord://webhook_id/webhook_token
+#    command: --interval 300 --label-enable --cleanup

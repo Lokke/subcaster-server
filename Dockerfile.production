@@ -6,6 +6,9 @@ ARG GIT_COMMIT=unknown
 ARG BUILD_DATE=unknown
 ARG VERSION=dev
 
+# Install build dependencies for MediaSoup (needs Python and build tools)
+RUN apk add --no-cache python3 make g++ linux-headers
+
 # Arbeitsverzeichnis setzen
 WORKDIR /app
 

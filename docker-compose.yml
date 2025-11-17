@@ -32,17 +32,17 @@ services:
       - docker-data/.env  # Load from docker-data/.env for runtime
     container_name: subcaster
     ports:
-      - "3002:3001"
+      - "3002:31337"
     environment:
       - NODE_ENV=production
-      - PORT=3001
+      - PORT=31337
       - DOCKER_ENV=true
     restart: unless-stopped
     volumes:
       # Host directory for persistent .env file
       - ./docker-data:/app/docker-data
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:3001/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:31337/health"]
       interval: 30s
       timeout: 10s
       retries: 3

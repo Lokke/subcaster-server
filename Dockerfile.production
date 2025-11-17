@@ -77,11 +77,11 @@ RUN chown -R nodejs:nodejs /app
 USER nodejs
 
 # Port freigeben
-EXPOSE 3001
+EXPOSE 31337
 
 # Health-Check hinzufügen
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
-  CMD curl -f http://localhost:3001/health || exit 1
+  CMD curl -f http://localhost:31337/health || exit 1
 
 # Server starten
 CMD ["node", "unified-server.js"]

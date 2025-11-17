@@ -15,19 +15,19 @@ services:
     image: ghcr.io/lokke/subcaster:latest  # Automatisch von GitHub Actions gebaut
     container_name: subcaster
     ports:
-      - "3002:3001"
+      - "3002:31337"
     env_file:
       - .env  # Lädt alle VITE_* Variablen zur Laufzeit
     environment:
       - NODE_ENV=production
-      - PORT=3001
+      - PORT=31337
       - DOCKER_ENV=true
     restart: unless-stopped
     volumes:
       # Host directory für persistente .env Datei (optional)
       - ./docker-data:/app/docker-data
     healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3001/health"]
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:31337/health"]
       interval: 30s
       timeout: 10s
       retries: 3

@@ -20,16 +20,16 @@ services:
     restart: unless-stopped
     
     ports:
-      - "3002:3001"  # Host:Container - Ändere 3002 wenn nötig
+      - "3002:31337"  # Host:Container - Ändere 3002 wenn nötig
     
     environment:
       # ============================================
       # SYSTEM
       # ============================================
       - NODE_ENV=production
-      - PORT=3001
+      - PORT=31337
       - DOCKER_ENV=true
-      - PROXY_PORT=3001
+      - PROXY_PORT=31337
       
       # ============================================
       # UNIFIED LOGIN (Optional)

@@ -51,20 +51,23 @@ ENV APP_VERSION=${VERSION} \
 # Arbeitsverzeichnis setzen
 WORKDIR /app
 
-# System-Dependencies für Health-Check
-RUN apt-get update && apt-get install -y curl && rm -rf /var/lib/apt/lists/*
+# Install build dependencies for MediaSoup (needed for native compilation)
+RUN apt-get update && apt-get install -y \
+    curl \
+    python3 \
+    python3-pip \
+    make \
+    g++ \
+    && rm -rf /var/lib/apt/lists/*
 
-# Package-Dateien kopieren für production install
-COPY --from=builder /app/package*.json ./
+# Kopiere Server-spezifisches package.json (nur Server-Dependencies!)
+COPY package.server.json ./package.json
+COPY package-lock.json ./
 
-# Kopiere MediaSoup node_modules vom Builder (vermeidet Neukompilierung)
-COPY --from=builder /app/node_modules ./node_modules
+# Installiere NUR Server-Dependencies (ohne Capacitor, three.js, etc.)
+RUN npm ci --omit=dev && npm cache clean --force
 
-# Entferne devDependencies manuell (behält MediaSoup prebuilt binaries)
-RUN npm prune --production && npm cache clean --force
-
-# Build-Artefakte kopieren
-COPY --from=builder /app/dist ./dist
+# Build-Artefakte kopieren (nur Server-Code!)
 COPY --from=builder /app/unified-server.js ./
 COPY --from=builder /app/server ./server
 

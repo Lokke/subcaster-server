@@ -1,0 +1,16 @@
+{
+  "name": "subcaster-server",
+  "version": "1.0.0",
+  "description": "SubCaster WebRTC Conference Server",
+  "type": "module",
+  "engines": {
+    "node": ">=24.8.0"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "dotenv": "^17.2.2",
+    "express": "^5.1.0",
+    "mediasoup": "^3.19.9",
+    "ws": "^8.18.3"
+  }
+}
